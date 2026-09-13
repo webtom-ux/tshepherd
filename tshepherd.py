@@ -26,7 +26,9 @@ STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "login"}
 PRIMARY = ("firstmate-primary",)  # Tuple namespace cannot collide with worker IDs.
-MODEL_NAMES = ("Astra", "Terra", "Sol", "Luna")
+MODEL_NAMES = ("Astra", "Terra", "Sol", "Luna", "Grok", "Claude")
+MODEL_NAME_WIDTH = 6
+MODEL_COLUMN_WIDTH = 9
 EFFORT_NAMES = {
     "none": "N", "off": "O", "minimal": "Mn", "low": "L", "medium": "M",
     "high": "H", "xhigh": "XH", "max": "Mx", "ultra": "U",
@@ -41,13 +43,23 @@ def clean(value):
 
 
 def compact_model(model, effort):
-    """Render only recognized runtime model names and explicit effort values."""
+    """Render a fixed model name or a compact name derived from runtime evidence."""
     value = clean(model)
     lowered = value.casefold()
     name = next((known for known in MODEL_NAMES
-                 if re.search(r"(?:^|[^a-z])" + known.casefold() + r"(?:$|[^a-z])", lowered)), "?")
+                 if re.search(r"(?:^|[^a-z])" + known.casefold() + r"(?:$|[^a-z])", lowered)), None)
+    if name is None and value:
+        # Runtime selection is normally provider/model-id. Prefer the model-id,
+        # normalize its separators, and bound it to the compact column.
+        source = next((part for part in reversed(value.split("/")) if part), value)
+        derived = re.sub(r"[^0-9A-Za-z]+", "-", source).strip("-")
+        if derived:
+            name = derived[:MODEL_NAME_WIDTH]
+            name = name[0].upper() + name[1:]
+        else:
+            name = value[:MODEL_NAME_WIDTH]
     level = EFFORT_NAMES.get(clean(effort).casefold(), "?")
-    return name + "·" + level
+    return (name or "?") + "·" + level
 
 
 def fit(text, width):
@@ -868,10 +880,10 @@ def render_lines(view, rows, width, height, busy, now):
         if wide or height - len(lines) - 4 > 2:
             lines.append(blank)
     title_width = min(36, max(18, width // 4))
-    prefix_width = 7 + title_width + 2 + 7 + 2 + 8 + 2 + 7 + 2 + 8 + 2
+    prefix_width = 7 + title_width + 2 + 7 + 2 + MODEL_COLUMN_WIDTH + 2 + 7 + 2 + 8 + 2
     if wide:
         lines.append(styled(("  #    " + column("Worker", title_width) + "  " + column("Agent", 7)
-                             + "  " + column(tr("Model"), 8) + "  " + column("Live", 7)
+                             + "  " + column(tr("Model"), MODEL_COLUMN_WIDTH) + "  " + column("Live", 7)
                              + "  " + column(tr("Aufgabe"), 8) + tr("  Letzte bekannte Aktivität"), 7)))
     body, project, chosen, chosen_end = [], None, None, None
     group_number = 0
@@ -893,7 +905,7 @@ def render_lines(view, rows, width, height, busy, now):
             activity = row.reason + " · " + row.activity if row.reason else row.activity
             body.append(styled(*lead, (column(row.title, title_width), state_color), ("  ", 0),
                                (column(clean(row.task.get("harness")), 7), 9), ("  ", 0),
-                               (column(row.model, 8), 7), ("  ", 0),
+                               (column(row.model, MODEL_COLUMN_WIDTH), 7), ("  ", 0),
                                (column(tr(row.live), 7), state_color), ("  ", 0),
                                (column(row.outcome, 8), 4 if row.outcome == "done" else 7), ("  ", 0),
                                (fit(activity, width - prefix_width - 1), 7)))

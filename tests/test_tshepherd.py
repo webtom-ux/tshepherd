@@ -657,14 +657,22 @@ class PollingTests(unittest.TestCase):
 
 
 class RenderingTests(unittest.TestCase):
-    def test_compact_model_known_unknown_and_effort_levels(self):
+    def test_compact_model_fixed_generic_unknown_and_effort_levels(self):
+        # Existing fixed names retain priority when several names are present.
         self.assertEqual(app.compact_model('claude-astra-5', 'medium'), 'Astra·M')
         self.assertEqual(app.compact_model('Terra', 'low'), 'Terra·L')
         self.assertEqual(app.compact_model('provider/luna', 'xhigh'), 'Luna·XH')
         self.assertEqual(app.compact_model('Astra', 'max'), 'Astra·Mx')
         self.assertEqual(app.compact_model('Sol', 'ultra'), 'Sol·U')
         self.assertEqual(app.compact_model('sol', ''), 'Sol·?')
-        self.assertEqual(app.compact_model('long-unknown-model', 'high'), '?·H')
+        self.assertEqual(app.compact_model('x-ai/GROK-4', 'high'), 'Grok·H')
+        self.assertEqual(app.compact_model('anthropic/CLAUDE-3-7', 'medium'), 'Claude·M')
+
+        # Unlisted models use the model-id component, never a role label.
+        self.assertEqual(app.compact_model('google/gemini-2.5-pro', 'high'), 'Gemini·H')
+        self.assertEqual(app.compact_model('openai/gpt-4o-mini', ''), 'Gpt-4o·?')
+        self.assertEqual(app.compact_model('long-unknown-model', 'high'), 'Long-u·H')
+        self.assertEqual(app.compact_model('megrokmodel', 'low'), 'Megrok·L')
         self.assertEqual(app.compact_model('', ''), '?·?')
 
     def test_count_blocks_and_aligned_single_line_rows(self):

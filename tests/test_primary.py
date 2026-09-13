@@ -239,6 +239,20 @@ class PrimaryTests(unittest.TestCase):
         first = self.measured()
         self.assertTrue(first.physical)
         self.assertEqual((first.model, first.effort), ('', ''))
+        self.assertEqual(app.compact_model(first.model, first.effort), '?·?')
+
+    def test_primary_uses_fixed_and_generic_runtime_model_labels(self):
+        cases = [
+            ('x-ai/grok-4', 'Grok·H'),
+            ('anthropic/claude-sonnet-4', 'Claude·H'),
+            ('google/gemini-2.5-pro', 'Gemini·H'),
+        ]
+        for runtime_model, expected in cases:
+            with self.subTest(runtime_model=runtime_model):
+                self.runner.owner['runtime'] = {'model': runtime_model, 'effort': 'high'}
+                primary = self.measured()
+                self.assertTrue(primary.physical, primary.reason)
+                self.assertEqual(app.compact_model(primary.model, primary.effort), expected)
 
     def test_missing_ambiguous_foreign_stale_or_restricted_never_focus(self):
         original = copy.deepcopy(self.runner.owner)
