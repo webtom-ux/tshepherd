@@ -100,7 +100,7 @@ fixture.write_text(json.dumps(snapshot))
 collected, natives = source.collect()
 rows = app.rows_for(collected, natives, time.time(), config.ttl)
 assert [(row.project, row.live, row.outcome) for row in rows] == [('Atlas', 'idle', 'done'), ('Harbor', 'waiting', 'parked')], rows
-assert app.counters(rows) == dict(working=0, waiting=1, idle=1, completed=1, unknown=0)
+assert app.counters(rows) == dict(working=0, waiting=1, idle=1, completed=1, unknown=0, done=0)
 view = app.View(snapshot=collected, natives=natives, last_success=time.time())
 lines = app.render_lines(view, rows, 120, 40, False, time.time())
 assert all(any(row.title in segment and role == app.STATES.index(row.live) + 1
