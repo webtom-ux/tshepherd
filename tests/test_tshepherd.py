@@ -179,7 +179,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(row.live, 'unknown')
         self.assertEqual(row.outcome, 'working')
         self.assertEqual(app.counters([row])['completed'], 0)
-        self.assertIn('bestätigt', self.source.focus(app.identity(self.task)))
+        self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'w1:t1', '--session', 'named'], self.runner.calls)
         for bad in ['pane', 'provider', 'missing', 'shell']:
             with self.subTest(bad=bad):
@@ -196,7 +196,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(measured.state, 'idle')
         self.assertEqual(measured.physical[0], 'wA')
         self.assertEqual(self.runner.calls[-1][-2:], ['--session', 'default'])
-        self.assertIn('bestätigt', self.source.focus(app.identity(self.task)))
+        self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'wA:t1', '--session', 'default'], self.runner.calls)
         measured.observed -= 50
         row = app.rows_for(self.snapshot, {self.task['id']: measured}, time.time(), 45)[0]
@@ -222,7 +222,7 @@ class SourceTests(unittest.TestCase):
             self.assertFalse(app.session_confirmed(ambiguous, 'default'))
 
     def test_safe_focus_exact_identity_only(self):
-        self.assertIn('bestätigt', self.source.focus(app.identity(self.task)))
+        self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'w1:t1', '--session', 'named'], self.runner.calls)
         self.assertTrue(all(c[-2:] == ['--session', 'named'] for c in self.runner.calls))
         self.runner.calls.clear()
@@ -233,7 +233,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(self.runner.calls, [])
 
     def test_focus_rejects_replacement_of_displayed_physical_target(self):
-        with self.assertRaisesRegex(ValueError, 'physischer Endpunkt ersetzt'):
+        with self.assertRaisesRegex(ValueError, 'physical endpoint replaced'):
             self.source.focus(app.identity(self.task), ('w1', 'w1:t1', 'old-terminal'))
         self.assertFalse(any('focus' in c for c in self.runner.calls))
 
@@ -259,7 +259,7 @@ class SourceTests(unittest.TestCase):
 
                 self.source.snapshot = snapshot
                 self.runner.run = run
-                with self.assertRaisesRegex(ValueError, 'physischer Endpunkt geändert'):
+                with self.assertRaisesRegex(ValueError, 'physical endpoint changed'):
                     self.source.focus(app.identity(self.task))
                 forbidden = ['agent', 'focus'] if replace_after == 2 else ['tab', 'focus']
                 self.assertFalse(any(c[1:3] == forbidden for c in self.runner.calls))
@@ -278,7 +278,7 @@ class SourceTests(unittest.TestCase):
             return original(argv, timeout, env)
 
         self.runner.run = held
-        self.assertIn('bestätigt', self.source.focus(app.identity(self.task)))
+        self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertTrue(released.is_set())
 
     def test_focus_rechecks_ownership_after_probe(self):
@@ -288,7 +288,7 @@ class SourceTests(unittest.TestCase):
             self.task['endpoint']['exists'] = False
             return value
         self.source.probe = raced_probe
-        with self.assertRaisesRegex(ValueError, 'während der Prüfung'):
+        with self.assertRaisesRegex(ValueError, 'during check'):
             self.source.focus(app.identity(self.task))
         self.assertFalse(any('focus' in c for c in self.runner.calls))
 
@@ -318,7 +318,7 @@ class SourceTests(unittest.TestCase):
                                 result['result'][field]['terminal_id'] = 'replacement'
                     return result
                 self.runner.run = raced
-                with self.assertRaisesRegex(ValueError, 'Tab-Wechsel nicht bestätigt'):
+                with self.assertRaisesRegex(ValueError, 'tab switch not confirmed'):
                     self.source.focus(app.identity(self.task))
                 self.assertFalse(any(c[1:3] == ['tab', 'focus'] for c in self.runner.calls))
 
@@ -339,7 +339,7 @@ class SourceTests(unittest.TestCase):
                         result['result']['agent']['focused'] = False
                     return result
                 self.runner.run = fail
-                with self.assertRaisesRegex(ValueError, 'Agent-Fokus bestätigt; Tab-Wechsel nicht bestätigt'):
+                with self.assertRaisesRegex(ValueError, 'agent focus confirmed; tab switch not confirmed'):
                     self.source.focus(app.identity(self.task))
 
     def test_budget_expired_or_cancelled_makes_no_herdr_calls(self):
@@ -405,7 +405,7 @@ class OwnershipTests(unittest.TestCase):
         self.meta.write_text(''.join(k + '=' + v + '\n' for k, v in self.fields.items()))
 
     def test_hot_path_uses_only_current_target_proof(self):
-        self.assertIn('bestätigt', self.source.focus(app.identity(self.task)))
+        self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertTrue(any(c[1:3] == ['tab', 'focus'] for c in self.runner.calls))
         self.assertTrue(all(c[-1] == 'named' for c in self.runner.calls))
 
@@ -419,7 +419,7 @@ class OwnershipTests(unittest.TestCase):
     def test_last_value_and_no_final_newline_are_supported(self):
         self.meta.write_text('spawn_gen=old\nremote_host=foreign\n' +
                              self.meta.read_text() + 'remote_host=')
-        self.assertIn('bestätigt', self.source.focus(app.identity(self.task)))
+        self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
 
     def test_metadata_replaced_during_read_is_rejected(self):
         original = os.fstat

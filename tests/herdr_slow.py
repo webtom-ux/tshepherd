@@ -88,7 +88,7 @@ for key in ('q', 'ctrl+c'):
              '--cwd', str(root), '--no-focus')
     else:
         call('pane', 'zoom', pane, '--off')
-    until(lambda: '· Aufgabe' in screen(), seconds=3)
+    until(lambda: '· task' in screen(), seconds=3)
     (case / 'narrow.ansi').write_text(call('pane', 'read', pane, '--source', 'visible', '--ansi'))
     call('pane', 'zoom', pane, '--on')
     until(lambda: selected(1), seconds=3)
