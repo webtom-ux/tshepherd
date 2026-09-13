@@ -91,6 +91,10 @@ Die eigene Auswahlidentität und Zielprüfung für Firstmate beschreibt
 [Primärer Chat](#primärer-chat).
 
 Die Ansicht zeigt Abrufalter, Datenfehler, Inventarlücken und unbekannte Zustände.
+`rows_for` ergänzt bei bestätigtem nativem `done` dessen Erklärung im Anzeigegrund,
+ohne die gelieferte Aufgabenaktivität zu ersetzen. Bei frischem Snapshot und
+gültiger nativer Messung, aber veraltetem `current_state`, bleibt die Aufgabenachse
+`unknown`; ihr Frischehinweis bleibt neben der nativen Erklärung erhalten.
 Zähler sind explizit Beobachtungszahlen; `completed` gehört zur Aufgabenachse und
 überlappt mit Live-Zuständen. Farbige Zahlenblöcke stehen vertikal neben dem Branding,
 Projektgruppen tragen eigene Farben und eingerückte einzeilige Worker. Agent, Model, Live,
