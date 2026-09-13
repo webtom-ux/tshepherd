@@ -98,26 +98,26 @@ gültiger nativer Messung, aber veraltetem `current_state`, bleibt die Aufgabena
 Zähler sind explizit Beobachtungszahlen; `completed` gehört zur Aufgabenachse und
 überlappt mit Live-Zuständen. Farbige Zahlenblöcke stehen vertikal neben dem Branding,
 Projektgruppen tragen eigene Farben und eingerückte einzeilige Worker. Agent, Model, Live,
-Aufgabe und letzte Aktivität stehen auf festen Zellspalten. Die Model-Zelle liest
+Aufgabe, Aufgabenzeit und letzte Aktivität stehen auf festen Zellspalten. Die Model-Zelle liest
 bei Pi ausschließlich eine innerhalb der bestätigten Prozessgeneration eindeutige
 Sessiondatei des exakten Worktrees und folgt deren aktiver Eintragskette.
 Die benutzerseitige Bedeutung der Modell-/Effortlabels beschreibt die
 [README](../README.md#launch-with-just-tshepherd); die Ableitung implementiert
 `compact_model` in `tshepherd.py`.
-Launch-/Dispatch-Metadaten sind kein Ersatz für die aktuelle Auswahl. Die breite
-Tabelle besitzt genau eine Zeitspalte für die aktuelle Aufgabe; in schmalen Ansichten
-steht diese Dauer in der Detailzeile. Nur der Auswahlfooter zeigt zusätzlich die
-Sessiondauer, beim primären Chat entsprechend nur die Session. Beide Zeitbasen
+Launch-/Dispatch-Metadaten sind kein Ersatz für die aktuelle Auswahl.
+Die Anordnung und Bedeutung der Zeitanzeige beschreibt die
+[README](../README.md#launch-with-just-tshepherd). Beide Zeitbasen
 stammen aus der erneut bestätigten Prozessgeneration: Bei Workern muss derselbe
 Prozess über seine selektierte Umgebung exakt an Task-ID, Spawn-Bindung und Pane
 gebunden sein; beim primären Chat gilt die verifizierte Lock-Owner-Generation.
 Snapshot-Beobachtungszeiten und unbestätigte Metadaten werden nicht als Startzeit
-gedeutet. Für abgeschlossene, fehlgeschlagene oder unbekannte Aufgaben bleibt
-die Aufgabendauer `—`, da die unterstützte Evidenz keinen autoritativen
-Endzeitpunkt liefert. Die Sessiondauer läuft davon unabhängig weiter; native
-Aktivität bestimmt keinen Aufgabenabschluss. Fehlende oder veraltete Evidenz
-ergibt `—`; die Anzeige rundet kompakt
-auf ganze `s`, `m`, `h` oder `d` ab und beeinflusst die Sortierung nicht.
+gedeutet. `rows_for` gibt den Aufgabenstart nur bei frischem, bestätigtem Outcome
+`working`, `parked`, `blocked` oder `paused` frei. Die unterstützte Evidenz liefert
+keinen autoritativen Endzeitpunkt; es wird weder ein Abschlusszeitpunkt aus
+nativer Aktivität abgeleitet noch ein solcher Zeitpunkt zwischengespeichert.
+Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine frische,
+identitätsgleiche native Messung, bei Workern zusätzlich einen frischen Snapshot.
+Die Zeitwerte beeinflussen die Sortierung nicht.
 Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
 beim Kürzen erhalten. Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
 die einzige Kodierung: Zustandswörter bleiben lesbar.
