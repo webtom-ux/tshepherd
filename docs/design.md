@@ -71,7 +71,8 @@ Dienst und keine dauerhaft gespeicherte Kopie des Aufgabenstatus entstehen.
 R und begrenzte unknown-Retries wecken denselben Collector, ohne Agentensteuerung.
 Ursachenprüfung, Schwelle/Cooldown und Grenzen: [Status-Neuerkennung](status-rediscovery.md).
 
-`View` hält den letzten In-Memory-Snapshot, die Quota-Beobachtungen und die Auswahl. Für Worker gilt die
+`View` hält Snapshot, native Messungen, Quota-Beobachtungen, Auswahl und bestätigte Aufgabenintervalle
+im Speicher. Für Worker gilt die
 Kombination aus Task-ID, Spawn-Generation, Backend, Endpunkt und Provider, nicht die
 Zeilennummer. Beim Dispatch wird zusätzlich die angezeigte physische Bindung
 mitgegeben, sofern bestätigt. Die bestätigte physische Auswahl bleibt auch über
@@ -118,13 +119,18 @@ gebunden sein; beim primären Chat gilt die verifizierte Lock-Owner-Generation.
 Snapshot-Beobachtungszeiten und unbestätigte Metadaten werden nicht als Startzeit
 gedeutet. `rows_for` gibt den Aufgabenstart nur bei frischem, bestätigtem Outcome
 `working`, `parked`, `blocked` oder `paused` frei. `View` merkt sich für diese
-identitätsgleiche Worker-Zeile ausschließlich im Speicher das zuletzt durch eine
-frische native Messung bestätigte Intervall. Wechselt das Outcome zu `done` oder
-`failed`, bleibt dieses Intervall eingefroren sichtbar; der Abschluss wird nicht
-aus nativer Aktivität abgeleitet und die Dauer läuft nicht mit der Session weiter. Eine neu bestätigte
-laufende Aufgabe ersetzt das Intervall. Ohne zuvor bestätigten Start und solchen
-Endbeleg, nach einem Neustart sowie bei unbekanntem Outcome bleibt die Aufgabenzeit
-`—`. Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine
+identitätsgleiche Worker-Zeile das zuletzt bestätigte Intervall vom Aufgabenstart
+bis `Native.observed` der frischen nativen Messung. Diese Obergrenze ist kein
+autoritativer Abschlusszeitpunkt; Zeit bis zur späteren Abschlussmeldung wird
+nicht hinzugerechnet. Bei frischem Outcome `done` oder `failed` verwendet die
+Anzeige dieses Intervall auch ohne aktuelle native Zeitmessung. Fehlende Messungen
+für dieselbe Identität löschen es nicht. Eine weitere bestätigte aktive Messung
+aktualisiert das Intervall; ein anderer bestätigter Aufgabenstart ersetzt dabei
+den bisherigen Start. Entfernte oder geänderte Zeilenidentitäten verlieren ihr
+Intervall. Die Regression
+`test_terminal_task_duration_survives_missing_native_measurements` in
+`tests/test_tshepherd.py` deckt Messausfall, neuen Start und Identitätswechsel ab.
+Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine
 frische, identitätsgleiche native Messung, bei Workern zusätzlich einen frischen
 Snapshot. Die Zeitwerte beeinflussen die Sortierung nicht und werden nicht
 dauerhaft gespeichert.
