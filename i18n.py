@@ -88,7 +88,7 @@ EN = {
     "nicht verfügbar": "unavailable",
     "Aufgabe": "Task",
     "Model": "Model",
-    "Zeit/Aufg.": "Time/Task",
+    "Zeit": "Time",
     "Session {session} · ": "Session {session} · ",
     "Session {session} · Aufgabe {task} · ": "Session {session} · Task {task} · ",
     "  Letzte bekannte Aktivität": "  Latest known activity",

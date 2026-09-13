@@ -919,11 +919,12 @@ def render_lines(view, rows, width, height, busy, now):
         if wide or height - len(lines) - 4 > 2:
             lines.append(blank)
     title_width = min(36, max(18, width // 4))
-    prefix_width = 7 + title_width + 2 + 7 + 2 + MODEL_COLUMN_WIDTH + 2 + 7 + 2 + 8 + 2 + 10 + 2
+    time_width = 4
+    prefix_width = 7 + title_width + 2 + 7 + 2 + MODEL_COLUMN_WIDTH + 2 + 7 + 2 + 8 + 2 + time_width + 2
     if wide:
         lines.append(styled(("  #    " + column("Worker", title_width) + "  " + column("Agent", 7)
                              + "  " + column(tr("Model"), MODEL_COLUMN_WIDTH) + "  " + column("Live", 7)
-                             + "  " + column(tr("Aufgabe"), 8) + "  " + column(tr("Zeit/Aufg."), 10)
+                             + "  " + column(tr("Aufgabe"), 8) + "  " + column(tr("Zeit"), time_width)
                              + tr("  Letzte bekannte Aktivität"), 7)))
     body, project, chosen, chosen_end = [], None, None, None
     group_number = 0
@@ -948,7 +949,7 @@ def render_lines(view, rows, width, height, busy, now):
                                (column(row.model, MODEL_COLUMN_WIDTH), 7), ("  ", 0),
                                (column(tr(row.live), 7), state_color), ("  ", 0),
                                (column(row.outcome, 8), 4 if row.outcome == "done" else 7), ("  ", 0),
-                               (column(compact_duration(row.task_started, now), 10), 7), ("  ", 0),
+                               (column(compact_duration(row.task_started, now), time_width), 7), ("  ", 0),
                                (fit(activity, width - prefix_width - 1), 7)))
         else:
             body.append(styled(*lead, (row.title, state_color)))

@@ -60,8 +60,8 @@ class LanguageTests(unittest.TestCase):
 
     def test_owned_ui_labels_both_languages_and_external_text_untouched(self):
         for language, header, duration, refresh, state, too_small in [
-            ('en', 'Latest known activity', 'Time/Task', 'R refresh', 'waiting', 'terminal too small'),
-            ('de', 'Letzte bekannte Aktivität', 'Zeit/Aufg.', 'R neu', 'wartet', 'Terminal zu klein')]:
+            ('en', 'Latest known activity', 'Time', 'R refresh', 'waiting', 'terminal too small'),
+            ('de', 'Letzte bekannte Aktivität', 'Zeit', 'R neu', 'wartet', 'Terminal zu klein')]:
             with self.subTest(language=language):
                 i18n.set_language(language)
                 snapshot, natives = collect(type('Source', (), {'config': app.Config('/example', '/example')})())
@@ -79,6 +79,8 @@ class LanguageTests(unittest.TestCase):
                 text = '\n'.join(line for line, _ in app.render_lines(view, rows, 140, 30, False, time.time()))
                 for expected in [header, duration, refresh, state, 'Projekt unbekannt', 'nicht gemessen', 'Befehl fehlgeschlagen']:
                     self.assertIn(expected, text)
+                self.assertNotIn('Time/Task', text)
+                self.assertNotIn('Zeit/Aufg.', text)
                 # Task outcome and raw source fields are not translated.
                 self.assertIn('parked', text)
                 self.assertIn(too_small, app.render_lines(view, rows, 100, 10, False, time.time())[0][0])
