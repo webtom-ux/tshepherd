@@ -81,7 +81,7 @@ is needed. `?` marks an empty or unconfirmed model, or missing or unrecognized
 thinking effort. Pi sessions are read only when one
 session file is generation-unique for the exact verified process and worktree;
 ambiguous sessions and other harnesses remain unknown. The wide table has one
-**Time/Task** column for the current task; narrow rows show that compact duration
+**Time** column for the current task; narrow rows show that compact duration
 in their detail line. Selecting a worker shows both **Session** and **Task** time
 in the footer, while selecting Firstmate shows only its session time. Durations
 round down to whole `s`/`m`/`h`/`d` and show `—` when evidence is missing or stale.
