@@ -12,6 +12,12 @@ Alternate-Screen-Austritt überprüft. Ein echtes interaktives `/bin/sh` startet
 TUI mit synthetischen Testdaten, beendet sie per q bzw. terminalgeneriertem Ctrl+C, führt danach ein Kommando
 aus und unterbricht anschließend einen neuen `sleep` per Ctrl+C.
 
+Der opt-in Treiber [`tests/status_ui.py`](../tests/status_ui.py) ergänzt Aufnahmen
+der echten curses-UI im isolierten PTY für natives `done`, `idle`, ungültige
+Provider-Evidenz und veraltete Aufgabendaten bei `done`. Aufruf und Quellengrenze
+stehen im Modul-Docstring: Die Antworten sind synthetisch, kein Nachweis realer
+Herdr-Zustandswechsel. Der Treiber gehört nicht zu `make check`.
+
 ## macOS-Terminaldiagnose
 
 Der erste Restorationstest verglich alle Termios-Bits unmittelbar nach Ende der

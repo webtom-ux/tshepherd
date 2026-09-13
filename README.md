@@ -77,6 +77,7 @@ runtime model and thinking effort (`Sol·M` means Sol with medium effort); `?`
 marks a value that could not be established. Pi sessions are read only when one
 session file is generation-unique for the exact verified process and worktree;
 ambiguous sessions and other harnesses remain unknown. Native `done` means ready
-for input with an unseen response and stays
-distinct from `idle`. Live activity and task completion are separate; `unknown`
+for input with an unseen response and stays distinct from `idle`. The unseen-response
+detail appears in wide worker rows and in the footer when that worker is selected,
+subject to the available terminal width. Live activity and task completion are separate; `unknown`
 means the current live state could not be confirmed.

@@ -145,13 +145,13 @@ class ReloadTests(unittest.TestCase):
             poller.close()
 
     def test_primary_semantic_palette_and_manual_key(self):
-        for state in ('working', 'waiting', 'idle', 'unknown'):
+        for state in ('working', 'waiting', 'idle', 'done', 'unknown'):
             primary = app.PrimaryRow(live=state, physical=('w', 't', 'term'))
             view = app.View(selected=primary.key, last_success=time.time())
             for width in (45, 110):
                 lines = app.render_lines(view, [primary], width, 30, False, time.time())
                 spans = next(spans for text, spans in lines if '◆ Firstmate' in text)
-                self.assertIn((0, '    > ◆ Firstmate', app.STATES.index(state) + 1), spans)
+                self.assertIn((0, '    > ◆ Firstmate', app.LIVE_STATES.index(state) + 1), spans)
                 self.assertIn('R refresh', lines[-1][0])
         class Screen:
             keys = iter([ord('R'), ord('q')])
