@@ -6,9 +6,9 @@ See workers grouped by project, their live activity, task status, and latest upd
 Select a worker or Firstmate itself and press **Enter** to switch to its tab.
 TShepherd does not create or manage tasks.
 
-![TShepherd with five sample workers in Atlas and Harbor](docs/images/tshepherd-preview.png)
+![Current TShepherd dashboard with the Firstmate row, provider quota bars, compact model and time columns, and five synthetic workers in Atlas and Harbor](docs/images/tshepherd-preview.png)
 
-*Illustrative, fully synthetic sample data — no real workers or private fleet data.*
+*Current interface shown with illustrative, fully synthetic sample data — no real workers or private fleet data.*
 
 ## Requirements
 
