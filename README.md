@@ -72,5 +72,7 @@ Only interface labels are translated; project names, task text and source status
 values are kept as reported.
 
 Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh,
-and **q** or **Ctrl+C** to quit. Live activity and task completion are separate;
+and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
+runtime model and thinking effort (`Sol·M` means Sol with medium effort); `?`
+marks a value that was not reported. Live activity and task completion are separate;
 `unknown` means the current live state could not be confirmed.

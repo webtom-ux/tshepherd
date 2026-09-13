@@ -154,9 +154,11 @@ class PrimaryTests(unittest.TestCase):
         return self.source.primary(time.monotonic() + 12)
 
     def test_primary_exact_focus_without_fleet_and_no_outcome(self):
+        self.runner.model, self.runner.effort = 'Astra', 'medium'
         first = self.measured()
         self.assertTrue(first.physical, first.reason)
         self.assertEqual(first.live, 'idle')
+        self.assertEqual(app.compact_model(first.model, first.effort), 'Astra·M')
         self.assertFalse(hasattr(first, 'task'))
         self.assertFalse(hasattr(first, 'outcome'))
         self.assertIn('Firstmate', self.source.focus(first.key))
@@ -267,7 +269,7 @@ class PrimaryTests(unittest.TestCase):
                     self.assertGreater(titles[0], primary_line)
                     self.assertEqual(lines[titles[0]][:5], f'{index:>3} >')
                     self.assertEqual(lines[titles[0] + 1], app.fit(
-                        f'       {row.live} · task {row.outcome} · {row.activity}', 27))
+                        f'       {row.model} · {row.live} · task {row.outcome} · {row.activity}', 27))
                     for value, label in zip(('5', '1', '1', '2', '1', '1'), ('Worker',) + app.STATES):
                         self.assertIn(f'{value:>3}  {label}', '\n'.join(lines))
                     if previous is not None:

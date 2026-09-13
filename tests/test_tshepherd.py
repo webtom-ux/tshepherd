@@ -121,6 +121,8 @@ class FakeRunner:
         self.calls = []
         self.bad = ''
         self.native = 'idle'
+        self.model = ''
+        self.effort = ''
         self.pane = 'w1:p1'
 
     def run(self, argv, timeout, env=None):
@@ -143,7 +145,9 @@ class FakeRunner:
                 raise RuntimeError('pane_not_found')
             return {'result': {'type': 'pane_info', 'pane': pane}}
         if command[:2] == ('agent', 'get'):
-            return {'result': {'type': 'agent_info', 'agent': dict(pane, agent='wrong' if self.bad == 'provider' else 'pi', agent_status=self.native, focused=True)}}
+            return {'result': {'type': 'agent_info', 'agent': dict(
+                pane, agent='wrong' if self.bad == 'provider' else 'pi', agent_status=self.native,
+                focused=True, model=self.model, effort=self.effort)}}
         if command[:2] == ('pane', 'process-info'):
             return {'result': {'type': 'pane_process_info', 'process_info': {'pane_id': self.pane, 'foreground_processes': [{'name': 'zsh' if self.bad == 'shell' else 'node'}]}}}
         if command[:2] == ('agent', 'focus'):
@@ -171,6 +175,17 @@ class SourceTests(unittest.TestCase):
         for bad in ['pane', 'provider', 'missing', 'shell']:
             self.runner.bad = bad
             self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).state, 'unknown')
+
+    def test_probe_collects_actual_native_model_and_effort_only(self):
+        self.runner.model, self.runner.effort = 'openai/gpt-sol-5.6', 'medium'
+        native = self.source.probe(self.task, time.monotonic() + 10)
+        self.assertEqual((native.model, native.effort), ('openai/gpt-sol-5.6', 'medium'))
+        self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model,
+                         'Sol·M')
+        self.task.update(model='Astra', effort='high')  # desired task config is not runtime evidence
+        native.model = native.effort = ''
+        self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model,
+                         '?·?')
 
     def test_focus_verified_native_done_without_semantic_completion(self):
         self.runner.native = 'done'
@@ -578,6 +593,16 @@ class PollingTests(unittest.TestCase):
 
 
 class RenderingTests(unittest.TestCase):
+    def test_compact_model_known_unknown_and_effort_levels(self):
+        self.assertEqual(app.compact_model('claude-astra-5', 'medium'), 'Astra·M')
+        self.assertEqual(app.compact_model('Terra', 'low'), 'Terra·L')
+        self.assertEqual(app.compact_model('provider/luna', 'xhigh'), 'Luna·XH')
+        self.assertEqual(app.compact_model('Astra', 'max'), 'Astra·Mx')
+        self.assertEqual(app.compact_model('Sol', 'ultra'), 'Sol·U')
+        self.assertEqual(app.compact_model('sol', ''), 'Sol·?')
+        self.assertEqual(app.compact_model('long-unknown-model', 'high'), '?·H')
+        self.assertEqual(app.compact_model('', ''), '?·?')
+
     def test_count_blocks_and_aligned_single_line_rows(self):
         snapshot = sample_snapshot(str(Path.cwd()))
         snapshot['tasks'][0]['backlog']['title'] = '中 Kürzer'
@@ -594,9 +619,31 @@ class RenderingTests(unittest.TestCase):
         worker_lines = [line for line in frame if any(row.title in line[0] for row in rows)]
         self.assertEqual(len(worker_lines), len(rows))  # one compact row per worker
         provider_columns = [next(x for x, text, role in spans if text.strip() == 'pi') for _, spans in worker_lines]
+        model_columns = [next(x for x, text, role in spans if text.strip() == '?·?') for _, spans in worker_lines]
         self.assertEqual(len(set(provider_columns)), 1)
+        self.assertEqual(len(set(model_columns)), 1)
         self.assertEqual(app.fit('a   b', 5), 'a   b')  # layout spaces must survive clipping
         self.assertEqual(app.cells(app.column('中', 6)), 6)
+
+    def test_model_column_in_both_languages_and_narrow_rows(self):
+        snapshot = sample_snapshot(str(Path.cwd()))
+        now = time.time()
+        natives = {t['id']: app.Native(t['demo_live'], 'native', now, app.identity(t))
+                   for t in snapshot['tasks']}
+        natives['demo-0'].model, natives['demo-0'].effort = 'Sol', 'medium'
+        rows = app.rows_for(snapshot, natives, now, 45)
+        view = app.View(snapshot=snapshot, natives=natives, last_success=now)
+        try:
+            for language, heading in [('en', 'Model'), ('de', 'Modell')]:
+                with self.subTest(language=language):
+                    app.set_language(language)
+                    wide = '\n'.join(text for text, _ in app.render_lines(view, rows, 120, 40, False, now))
+                    narrow = '\n'.join(text for text, _ in app.render_lines(view, rows, 28, 16, False, now))
+                    self.assertIn(heading, wide)
+                    self.assertIn('Sol·M', wide)
+                    self.assertIn('Sol·M', narrow)
+        finally:
+            app.set_language('en')
 
     def test_sizes_unicode_selection_scrolling_and_error(self):
         snapshot = sample_snapshot(str(Path.cwd()))
