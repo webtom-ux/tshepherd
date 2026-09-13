@@ -706,6 +706,74 @@ class PollingTests(unittest.TestCase):
         self.assertEqual(runner.env['FM_ROOT_OVERRIDE'], '/source')
 
 
+class QuotaTests(unittest.TestCase):
+    def payload(self):
+        def provider(name, percent, **state):
+            return {
+                'provider': name,
+                'state': dict(status='fresh', stale=False, **state),
+                'quotaSemantics': {
+                    'status': 'known',
+                    'effectiveAvailability': [
+                        {'scope': 'all', 'status': 'known', 'effectivePercentRemaining': percent + 20},
+                        {'scope': 'narrow', 'status': 'known', 'effectivePercentRemaining': percent},
+                    ],
+                },
+            }
+        return {'providers': [
+            provider('codex', 49),
+            provider('grok', 10, authStatus='usable'),
+            dict(provider('cursor', 80), state={'status': 'auth_required', 'stale': False}),
+            dict(provider('claude', 70), quotaSemantics={'status': 'unknown'}),
+        ]}
+
+    def test_effective_scope_and_fresh_usable_provider_filter(self):
+        quotas = app.parse_quotas(self.payload(), 123)
+        self.assertEqual([(q.provider, q.percent, q.observed) for q in quotas],
+                         [('codex', 49, 123), ('grok', 10, 123)])
+        with self.assertRaises(ValueError):
+            app.parse_quotas({}, 123)
+
+    def test_local_read_disables_refresh_caches_and_fails_closed(self):
+        class QuotaRunner:
+            stop = threading.Event()
+            calls = []
+            fail = False
+            def run(self, argv, timeout, env=None):
+                self.calls.append(argv)
+                if self.fail:
+                    raise RuntimeError('offline')
+                return self.payload
+        runner = QuotaRunner()
+        runner.payload = self.payload()
+        source = app.Source(app.Config('/home', '/root', quota_axi='/local/quota-axi'), runner)
+        self.assertEqual(len(source.quotas()), 2)
+        self.assertEqual(len(source.quotas()), 2)
+        self.assertEqual(runner.calls, [['/local/quota-axi', '--json', '--no-credential-refresh']])
+        source.quota_checked -= app.QUOTA_CACHE_TTL + 1
+        runner.fail = True
+        self.assertEqual(source.quotas(), [])
+        self.assertEqual(len(runner.calls), 2)
+
+    def test_header_bars_order_thresholds_and_narrow_layout(self):
+        now = time.time()
+        quotas = [app.Quota('codex', 49, now), app.Quota('grok', 50, now), app.Quota('low', 10, now)]
+        view = app.View(last_success=now, quotas=quotas)
+        wide = app.render_lines(view, [], 160, 24, False, now)
+        live_y = next(y for y, (text, _) in enumerate(wide) if app.tr('Live · lokal') in text)
+        quota_y = next(y for y, (text, _) in enumerate(wide) if app.tr('Quota') in text)
+        self.assertEqual(quota_y, live_y + 1)
+        text, spans = wide[quota_y]
+        for value in ('Codex █████░░░░░ 49%', 'Grok █████░░░░░ 50%', 'Low █░░░░░░░░░ 10%'):
+            self.assertIn(value, text)
+        self.assertEqual([role for _, value, role in spans if value.endswith('%')], [1, 4, 5])
+        narrow = app.render_lines(view, [], 28, 16, False, now)
+        self.assertIn(app.tr('Live · lokal'), narrow[0][0])
+        self.assertRegex(narrow[1][0], r'C [█░]{2} 49% G [█░]{2} 50%')
+        stale = app.View(last_success=now, quotas=[app.Quota('codex', 80, now - 121)])
+        self.assertIn('—', app.render_lines(stale, [], 120, 20, False, now)[4][0])
+
+
 class RenderingTests(unittest.TestCase):
     def test_compact_duration_units_and_fail_closed_values(self):
         now = 1_000_000

@@ -57,6 +57,10 @@ Fokus nicht. Alle nachfolgenden Eigentums-, Frische- und
 Identitätsprüfungen bleiben erforderlich.
 
 `Poller` besitzt einen Collector und einen separaten Single-Flight-Fokusworker.
+Die ergänzende Quota-Anzeige liest `quota-axi` lokal ohne Credential-Refresh und
+bleibt von Snapshot-Inventar, Aktivität und Fokusautorität getrennt. Sie übernimmt
+nur frische, nutzbare Provider mit bekannter effektiver Verfügbarkeit, cached Reads
+90 Sekunden und verwirft Fehler sowie veraltete Werte geschlossen.
 Enter wird auch während eines Refreshs sofort angenommen; ein zweiter Fokusauftrag
 während einer laufenden Fokusprüfung wird abgelehnt, nicht später nachgeholt.
 Innerhalb eines Refreshs gibt es maximal vier native Leser mit einem gemeinsamen
@@ -119,7 +123,11 @@ Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine frisch
 identitätsgleiche native Messung, bei Workern zusätzlich einen frischen Snapshot.
 Die Zeitwerte beeinflussen die Sortierung nicht.
 Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
-beim Kürzen erhalten. Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
+beim Kürzen erhalten.
+Im Kopf steht `Live · lokal` über einer Quota-Zeile; jeder Provider zeigt den
+niedrigsten bekannten `effectivePercentRemaining` seiner effektiven Scopes als
+Balken und ganzzahligen Prozentwert. Unter 78 Spalten werden Zeilen gestapelt und
+Quota kompakt dargestellt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
 die einzige Kodierung: Zustandswörter bleiben lesbar.
 
 ## Primärer Chat

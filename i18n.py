@@ -28,6 +28,7 @@ EN = {
     "Zeitlimit: ": "timeout: ",
     "Antwort überschreitet Größenlimit": "response exceeds size limit",
     "Befehl fehlgeschlagen": "command failed",
+    "Quota-Antwort ungültig": "invalid quota response",
     "Lab verweigert fremde Session": "lab rejects foreign session",
     "Messbudget verbraucht": "measurement budget exhausted",
     "Session/Protokoll nicht bestätigt": "session/protocol not confirmed",
@@ -76,6 +77,7 @@ EN = {
     "Mind. 28 Spalten / 16 Zeilen; q beendet": "Min. 28 columns / 16 rows; q quits",
     "nie": "never",
     "Live · lokal": "Live · local",
+    "Quota": "Quota",
     "   letzter Erfolg {age}": "   last success {age}",
     "aktualisiert …": "refreshing …",
     "automatische Aktualisierung": "automatic refresh",
@@ -107,6 +109,7 @@ EN = {
     "Prüfe Auswahl vor Fokus …": "checking selection before focus …",
     "Fokusprüfung läuft bereits": "focus check already running",
     "Pfad zum kompatiblen Herdr-CLI": "path to the compatible Herdr CLI",
+    "Pfad zum lokalen quota-axi-CLI": "path to the local quota-axi CLI",
     "nur im isolierten Lab: JSON statt Firstmate-Aufruf": "isolated lab only: JSON instead of a Firstmate call",
     "--fm-home und --firstmate-root explizit angeben (oder TSHEPHERD_* setzen)": "provide --fm-home and --firstmate-root (or set TSHEPHERD_*)",
     "Lab braucht Helper und eine nicht-default fm-lab-* Session": "lab requires a helper and a non-default fm-lab-* session",
@@ -132,6 +135,7 @@ EN = {
 
 DE = {
     "Firstmate fleet": "Firstmate-Flotte",
+    "Quota": "Kontingent",
     "Model": "Modell",
     "Herdr native: ": "Herdr nativ: ",
     "Herdr native: done · bereit für Eingabe, ungesehen": "Herdr nativ: done · bereit für Eingabe, ungesehen",

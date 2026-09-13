@@ -6,6 +6,7 @@ import curses
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -29,6 +30,8 @@ PRIMARY = ("firstmate-primary",)  # Tuple namespace cannot collide with worker I
 MODEL_NAMES = ("Astra", "Terra", "Sol", "Luna", "Grok", "Claude")
 MODEL_NAME_WIDTH = 6
 MODEL_COLUMN_WIDTH = 9
+QUOTA_CACHE_TTL = 90
+QUOTA_DISPLAY_TTL = 120
 EFFORT_NAMES = {
     "none": "N", "off": "O", "minimal": "Mn", "low": "L", "medium": "M",
     "high": "H", "xhigh": "XH", "max": "Mx", "ultra": "U",
@@ -194,6 +197,13 @@ class Native:
     task_started: float = 0
 
 
+@dataclass(frozen=True)
+class Quota:
+    provider: str
+    percent: int
+    observed: float
+
+
 @dataclass
 class Row:
     task: dict
@@ -280,6 +290,39 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
     return sorted(rows, key=lambda row: (row.project.casefold(), row.title.casefold(), row.task["id"]))
 
 
+def parse_quotas(data, observed):
+    """Keep only fresh usable providers with known effective availability."""
+    result = []
+    providers = data.get("providers") if isinstance(data, dict) else None
+    if not isinstance(providers, list):
+        raise ValueError(tr("Quota-Antwort ungültig"))
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        state = provider.get("state", {})
+        semantics = provider.get("quotaSemantics", {})
+        if (not isinstance(state, dict) or state.get("status") != "fresh"
+                or state.get("stale") is not False
+                or state.get("authStatus") not in (None, "usable")
+                or not isinstance(semantics, dict) or semantics.get("status") != "known"):
+            continue
+        scopes = semantics.get("effectiveAvailability")
+        if not isinstance(scopes, list):
+            continue
+        values = []
+        for scope in scopes:
+            if not isinstance(scope, dict):
+                continue
+            value = scope.get("effectivePercentRemaining")
+            if (scope.get("status") == "known" and isinstance(value, (int, float))
+                    and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100):
+                values.append(value)
+        name = clean(provider.get("provider"))
+        if name and values:
+            result.append(Quota(name, int(round(min(values))), observed))
+    return result
+
+
 def counters(rows):
     # Completion is a separate dimension, not an exclusive live-agent state.
     result = {state: 0 for state in STATES}
@@ -354,12 +397,28 @@ class Config:
     lab_helper: str = ""
     lab_session: str = ""
     fixture: str = ""
+    quota_axi: str = "quota-axi"
 
 
 class Source:
     def __init__(self, config, runner):
         self.config, self.runner = config, runner
         self.current = None  # last complete observation; inventory remains snapshot-owned
+        self.quota_cache = []
+        self.quota_checked = float("-inf")
+
+    def quotas(self):
+        """Read quota-axi without credential renewal; failures clear visible data."""
+        now = time.monotonic()
+        if now - self.quota_checked < QUOTA_CACHE_TTL:
+            return self.quota_cache
+        self.quota_checked = now
+        try:
+            data = self.runner.run([self.config.quota_axi, "--json", "--no-credential-refresh"], 10)
+            self.quota_cache = parse_quotas(data, time.time())
+        except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+            self.quota_cache = []
+        return self.quota_cache
 
     def snapshot(self):
         c = self.config
@@ -772,7 +831,14 @@ class Poller:
             except Exception as error:
                 self.results.put(("error", clean(str(error))))
             finally:
+                # Quota is supplemental and must not extend the fleet's busy state.
                 self.busy.clear()
+            try:
+                quota_reader = getattr(self.source, "quotas", None)
+                if quota_reader is not None:
+                    self.results.put(("quota", quota_reader()))
+            except Exception:
+                self.results.put(("quota", []))
             self.refresh.wait(self.interval)
 
     def close(self):
@@ -811,6 +877,7 @@ class View:
     selected: tuple = ()
     offset: int = 0
     selected_physical: tuple = ()
+    quotas: list = field(default_factory=list)
 
     def apply(self, kind, payload):
         if kind == "snapshot":
@@ -823,6 +890,8 @@ class View:
             self.last_success, self.error = time.time(), ""
         elif kind == "error":
             self.error = payload
+        elif kind == "quota":
+            self.quotas = payload
         else:
             self.message = payload
 
@@ -867,6 +936,22 @@ def styled(*segments):
     return text, tuple(spans)
 
 
+def quota_segments(quotas, now, compact=False, tiny=False):
+    """Render fresh quota evidence with a bounded bar and threshold color."""
+    values = [quota for quota in quotas if 0 <= now - quota.observed <= QUOTA_DISPLAY_TTL]
+    segments = []
+    for index, quota in enumerate(values):
+        if index:
+            segments.append((" " if compact else " · ", 7))
+        label = quota.provider[:1].upper() if tiny else (quota.provider[:3].title() if compact else quota.provider.title())
+        bar_width = 2 if tiny else (4 if compact else 10)
+        filled = int(round(quota.percent * bar_width / 100))
+        bar = "█" * filled + "░" * (bar_width - filled)
+        color = 4 if quota.percent >= 50 else (5 if quota.percent <= 10 else 1)
+        segments.extend(((label + " ", 7), (f"{bar} {quota.percent}%", color)))
+    return segments
+
+
 def render_lines(view, rows, width, height, busy, now):
     """Reference-like terminal content: count blocks, hierarchy, compact rows."""
     blank = styled(("", 0))
@@ -882,10 +967,11 @@ def render_lines(view, rows, width, height, busy, now):
     wide = width >= 78
     lines = [blank]
     labels = ("Worker",) + STATES
+    quota_parts = quota_segments(view.quotas, now, compact=width < 100)
     for i, label in enumerate(labels):
         value = total if i == 0 else (str(count[label]) if view.last_success else "?")
         if wide:
-            brand = ("TShepherd", tr("Firstmate fleet"), "", tr("Live · lokal"), "", "")[i]
+            brand = ("TShepherd", tr("Firstmate fleet"), tr("Live · lokal"), tr("Quota"), "", "")[i]
             prefix = "  " + column(brand, 22)
         else:
             prefix = "  "
@@ -896,14 +982,22 @@ def render_lines(view, rows, width, height, busy, now):
             segments += [("   " + (tr("aktualisiert …") if busy else tr("automatische Aktualisierung")), 7)]
         if wide and i == 2:
             segments += [(tr("   nur dieses Home; keine Unterhomes"), 7)]
+        if wide and i == 3:
+            segments += [("   ", 0)] + (quota_parts or [("—", 7)])
         if wide and i == 4:
             segments += [(tr("   Aufgabe done; überlappt mit Live"), 7)]
         if wide and i == 5:
             segments += [(tr("   Messung fehlt / nicht bestätigt"), 7)]
         lines.append(styled(*segments))
     if not wide:
-        lines[0] = styled(("  TShepherd", 6), (tr("  ·  Erfolg {age}", age=age) + (tr(" · lädt") if busy else ""), 7))
-    lines.append(blank)
+        lines[0] = styled(("  TShepherd · " + tr("Live · lokal"), 6),
+                          (tr("  ·  Erfolg {age}", age=age) + (tr(" · lädt") if busy else ""), 7))
+        available = max(0, width - cells("  " + tr("Quota") + " ") - 1)
+        tiny = available < 30
+        parts = quota_segments(view.quotas, now, compact=True, tiny=tiny) or [("—", 7)]
+        lines.insert(1, styled(("  " + ("Q" if tiny else tr("Quota")) + " ", 7), *parts))
+    if wide:
+        lines.append(blank)
     if primary is not None:
         mark = ">" if primary.key == view.selected else " "
         status = tr(primary.live) if primary.physical else tr("nicht verfügbar")
@@ -1076,6 +1170,7 @@ def parse_args(argv=None):
         parser.add_argument("--fm-home", default=os.environ.get("TSHEPHERD_FM_HOME"), help=tr("Firstmate data directory"))
         parser.add_argument("--firstmate-root", default=os.environ.get("TSHEPHERD_FIRSTMATE_ROOT"), help=tr("Firstmate source checkout"))
         parser.add_argument("--herdr", default="herdr", help=tr("Pfad zum kompatiblen Herdr-CLI"))
+        parser.add_argument("--quota-axi", default="quota-axi", help=tr("Pfad zum lokalen quota-axi-CLI"))
         parser.add_argument("--lab-helper", default="", help=tr("isolated lab helper"))
         parser.add_argument("--lab-session", default="", help=tr("isolated non-default lab session"))
         parser.add_argument("--lab-snapshot", default="", help=tr("nur im isolierten Lab: JSON statt Firstmate-Aufruf"))
@@ -1094,7 +1189,7 @@ def parse_args(argv=None):
 def main():
     args, parser = parse_args()
     config = Config(str(Path(args.fm_home).resolve()), str(Path(args.firstmate_root).resolve()),
-                    herdr=args.herdr, lab_helper=args.lab_helper,
+                    herdr=args.herdr, quota_axi=args.quota_axi, lab_helper=args.lab_helper,
                     lab_session=args.lab_session, fixture=args.lab_snapshot)
     source = Source(config, Runner(threading.Event()))
     try:

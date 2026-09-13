@@ -18,6 +18,9 @@ TShepherd does not create or manage tasks.
   (`fm-fleet-snapshot.v1`) and dependencies, including **Bash** and **jq**.
 - A running **Herdr** session with a matching `herdr` CLI on your `PATH`.
   Verified with Herdr **0.9.0 / protocol 22**.
+- Optional: a local [`quota-axi`](https://www.npmjs.com/package/quota-axi) CLI on
+  your `PATH` for provider quota bars. The rest of the dashboard remains available
+  when quota evidence cannot be read.
 
 ## Install and run
 
@@ -70,6 +73,13 @@ TShepherd --lang en  # English (default)
 
 Only interface labels are translated; project names, task text and source status
 values are kept as reported.
+
+The header shows quota only for providers that `quota-axi` reports as fresh and
+usable. Each bar uses the lowest known `effectivePercentRemaining` across the
+provider's effective scopes. TShepherd invokes `quota-axi` locally with credential
+refresh disabled, caches reads for 90 seconds, and shows no stale or failed result;
+it never starts login, burn, reset, or routing actions. Use `--quota-axi PATH` when
+the CLI is not on `PATH`.
 
 Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh,
 and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
