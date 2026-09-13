@@ -125,8 +125,10 @@ Die Zeitwerte beeinflussen die Sortierung nicht.
 Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
 beim Kürzen erhalten.
 Im Kopf steht `Live · lokal` über einer Quota-Zeile; jeder Provider zeigt den
-niedrigsten bekannten `effectivePercentRemaining` seiner effektiven Scopes als
-Balken und ganzzahligen Prozentwert. Unter 78 Spalten werden Zeilen gestapelt und
+bekannten `effectivePercentRemaining` seines primären Scopes `all_models` oder
+`all_products` als Balken und ganzzahligen Prozentwert. Unabhängige Code-Review-,
+Modell- und Produktscopes fließen nicht ein; fehlt ein eindeutiger bekannter
+Primärscope, bleibt der Provider ausgeblendet. Unter 78 Spalten werden Zeilen gestapelt und
 Quota kompakt dargestellt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
 die einzige Kodierung: Zustandswörter bleiben lesbar.
 

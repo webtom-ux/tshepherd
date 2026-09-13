@@ -715,13 +715,15 @@ class QuotaTests(unittest.TestCase):
                 'quotaSemantics': {
                     'status': 'known',
                     'effectiveAvailability': [
-                        {'scope': 'all', 'status': 'known', 'effectivePercentRemaining': percent + 20},
-                        {'scope': 'narrow', 'status': 'known', 'effectivePercentRemaining': percent},
+                        {'scope': 'all_products' if name == 'grok' else 'all_models',
+                         'status': 'known', 'effectivePercentRemaining': percent},
+                        {'scope': 'grok-3' if name == 'grok' else 'code_review',
+                         'status': 'known', 'effectivePercentRemaining': 0},
                     ],
                 },
             }
         return {'providers': [
-            provider('codex', 49),
+            provider('codex', 80),
             provider('grok', 10, authStatus='usable'),
             dict(provider('cursor', 80), state={'status': 'auth_required', 'stale': False}),
             dict(provider('claude', 70), quotaSemantics={'status': 'unknown'}),
@@ -730,9 +732,32 @@ class QuotaTests(unittest.TestCase):
     def test_effective_scope_and_fresh_usable_provider_filter(self):
         quotas = app.parse_quotas(self.payload(), 123)
         self.assertEqual([(q.provider, q.percent, q.observed) for q in quotas],
-                         [('codex', 49, 123), ('grok', 10, 123)])
+                         [('codex', 80, 123), ('grok', 10, 123)])
         with self.assertRaises(ValueError):
             app.parse_quotas({}, 123)
+
+    def test_missing_unknown_or_invalid_primary_scope_is_hidden(self):
+        for name in ('codex', 'grok'):
+            for invalid in (None, True, -1, 101, float('nan'), float('inf'), '80'):
+                with self.subTest(provider=name, invalid=invalid):
+                    provider = next(p for p in self.payload()['providers'] if p['provider'] == name)
+                    provider['quotaSemantics']['effectiveAvailability'][0]['effectivePercentRemaining'] = invalid
+                    self.assertEqual(app.parse_quotas({'providers': [provider]}, 123), [])
+            for case in ('missing', 'unknown', 'ambiguous', 'stale', 'disconnected'):
+                with self.subTest(provider=name, case=case):
+                    provider = next(p for p in self.payload()['providers'] if p['provider'] == name)
+                    scopes = provider['quotaSemantics']['effectiveAvailability']
+                    if case == 'missing':
+                        del scopes[0]
+                    elif case == 'unknown':
+                        scopes[0]['status'] = 'unknown'
+                    elif case == 'ambiguous':
+                        scopes.append(dict(scopes[0]))
+                    elif case == 'stale':
+                        provider['state']['stale'] = True
+                    else:
+                        provider['state']['authStatus'] = 'auth_required'
+                    self.assertEqual(app.parse_quotas({'providers': [provider]}, 123), [])
 
     def test_local_read_disables_refresh_caches_and_fails_closed(self):
         class QuotaRunner:

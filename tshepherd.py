@@ -309,17 +309,16 @@ def parse_quotas(data, observed):
         scopes = semantics.get("effectiveAvailability")
         if not isinstance(scopes, list):
             continue
-        values = []
-        for scope in scopes:
-            if not isinstance(scope, dict):
-                continue
-            value = scope.get("effectivePercentRemaining")
-            if (scope.get("status") == "known" and isinstance(value, (int, float))
-                    and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100):
-                values.append(value)
+        primary = [scope for scope in scopes if isinstance(scope, dict)
+                   and scope.get("scope") in ("all_models", "all_products")]
+        if len(primary) != 1:
+            continue
+        scope = primary[0]
+        value = scope.get("effectivePercentRemaining")
         name = clean(provider.get("provider"))
-        if name and values:
-            result.append(Quota(name, int(round(min(values))), observed))
+        if (name and scope.get("status") == "known" and isinstance(value, (int, float))
+                and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100):
+            result.append(Quota(name, int(round(value)), observed))
     return result
 
 

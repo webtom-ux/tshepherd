@@ -75,8 +75,9 @@ Only interface labels are translated; project names, task text and source status
 values are kept as reported.
 
 The header shows quota only for providers that `quota-axi` reports as fresh and
-usable. Each bar uses the lowest known `effectivePercentRemaining` across the
-provider's effective scopes. TShepherd invokes `quota-axi` locally with credential
+usable. Each bar uses `effectivePercentRemaining` from the provider's primary
+`all_models` or `all_products` scope. Independent code-review, model, and product
+scopes are excluded; a missing, ambiguous, or unknown primary scope hides the bar. TShepherd invokes `quota-axi` locally with credential
 refresh disabled, caches reads for 90 seconds, and shows no stale or failed result;
 it never starts login, burn, reset, or routing actions. Use `--quota-axi PATH` when
 the CLI is not on `PATH`.
