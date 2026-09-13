@@ -219,7 +219,7 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
         elif live == "done":
             # Herdr distinguishes an unseen ready response from ordinary idle.
             # Keep that native explanation visible without treating it as task activity.
-            reason = native.detail
+            reason = " · ".join(detail for detail in (reason, native.detail) if detail)
         model = compact_model(native.model, native.effort) if native_valid else compact_model("", "")
         activity = clean(current.get("detail"))
         if not activity:

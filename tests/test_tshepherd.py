@@ -219,6 +219,27 @@ class SourceTests(unittest.TestCase):
                     self.source.focus(app.identity(self.task))
                 self.assertFalse(any('focus' in call for call in self.runner.calls))
 
+    def test_native_done_preserves_expired_task_explanation(self):
+        self.runner.native = 'done'
+        native = self.source.probe(self.task, time.monotonic() + 10)
+        self.task['current_state']['observed_at'] = '2000-01-01T00:00:00Z'
+        now = time.time()
+        row = app.rows_for(self.snapshot, {self.task['id']: native}, now, 45)[0]
+        self.assertEqual(row.live, 'done')
+        self.assertEqual(row.outcome, 'unknown')
+        self.assertEqual(row.activity, self.task['current_state']['detail'])
+        stale_reason = app.tr('veraltet / Quelle nicht erreichbar')
+        self.assertIn(stale_reason, row.reason)
+        self.assertIn(native.detail, row.reason)
+        view = app.View(snapshot=self.snapshot, natives={self.task['id']: native},
+                        last_success=now, selected=row.key)
+        lines = [text for text, _ in app.render_lines(view, [row], 300, 24, False, now)]
+        worker = next(text for text in lines if row.title in text)
+        footer = lines[-3]
+        for text in (worker, footer):
+            self.assertIn(stale_reason, text)
+            self.assertIn(native.detail, text)
+
     def test_terminal_render_distinguishes_done_idle_and_true_unknown(self):
         expected = {
             'en': ('done', 'ready for input, unseen', 'idle', 'unknown'),
