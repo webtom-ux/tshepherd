@@ -57,10 +57,11 @@ Fokus nicht. Alle nachfolgenden Eigentums-, Frische- und
 Identitätsprüfungen bleiben erforderlich.
 
 `Poller` besitzt einen Collector und einen separaten Single-Flight-Fokusworker.
-Die ergänzende Quota-Anzeige liest `quota-axi` lokal ohne Credential-Refresh und
-bleibt von Snapshot-Inventar, Aktivität und Fokusautorität getrennt. Sie übernimmt
-nur frische, nutzbare Provider mit bekannter effektiver Verfügbarkeit, cached Reads
-90 Sekunden und verwirft Fehler sowie veraltete Werte geschlossen.
+Die ergänzende Quota-Anzeige bleibt von Snapshot-Inventar, Aktivität und
+Fokusautorität getrennt. Der Collector liest sie nach dem Freigeben seines
+Busy-Zustands und liefert sie als separates Ergebnis an `View`.
+Provider-Auswahl, Frische und Darstellung beschreibt die
+[README](../README.md#launch-with-just-tshepherd).
 Enter wird auch während eines Refreshs sofort angenommen; ein zweiter Fokusauftrag
 während einer laufenden Fokusprüfung wird abgelehnt, nicht später nachgeholt.
 Innerhalb eines Refreshs gibt es maximal vier native Leser mit einem gemeinsamen
@@ -70,7 +71,7 @@ Dienst und keine dauerhaft gespeicherte Kopie des Aufgabenstatus entstehen.
 R und begrenzte unknown-Retries wecken denselben Collector, ohne Agentensteuerung.
 Ursachenprüfung, Schwelle/Cooldown und Grenzen: [Status-Neuerkennung](status-rediscovery.md).
 
-`View` hält nur den letzten In-Memory-Snapshot und die Auswahl. Für Worker gilt die
+`View` hält den letzten In-Memory-Snapshot, die Quota-Beobachtungen und die Auswahl. Für Worker gilt die
 Kombination aus Task-ID, Spawn-Generation, Backend, Endpunkt und Provider, nicht die
 Zeilennummer. Beim Dispatch wird zusätzlich die angezeigte physische Bindung
 mitgegeben, sofern bestätigt. Die bestätigte physische Auswahl bleibt auch über
@@ -124,12 +125,7 @@ identitätsgleiche native Messung, bei Workern zusätzlich einen frischen Snapsh
 Die Zeitwerte beeinflussen die Sortierung nicht.
 Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
 beim Kürzen erhalten.
-Im Kopf steht `Live · lokal` über einer Quota-Zeile; jeder Provider zeigt den
-bekannten `effectivePercentRemaining` seines primären Scopes `all_models` oder
-`all_products` als Balken und ganzzahligen Prozentwert. Unabhängige Code-Review-,
-Modell- und Produktscopes fließen nicht ein; fehlt ein eindeutiger bekannter
-Primärscope, bleibt der Provider ausgeblendet. Unter 78 Spalten werden Zeilen gestapelt und
-Quota kompakt dargestellt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
+Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
 die einzige Kodierung: Zustandswörter bleiben lesbar.
 
 ## Primärer Chat

@@ -74,13 +74,18 @@ TShepherd --lang en  # English (default)
 Only interface labels are translated; project names, task text and source status
 values are kept as reported.
 
-The header shows quota only for providers that `quota-axi` reports as fresh and
-usable. Each bar uses `effectivePercentRemaining` from the provider's primary
+Below `Live · local`, the header shows quota bars with whole-number percentages
+only for providers that `quota-axi` reports as fresh and usable.
+Each bar uses `effectivePercentRemaining` from the provider's primary
 `all_models` or `all_products` scope. Independent code-review, model, and product
-scopes are excluded; a missing, ambiguous, or unknown primary scope hides the bar. TShepherd invokes `quota-axi` locally with credential
-refresh disabled, caches reads for 90 seconds, and shows no stale or failed result;
-it never starts login, burn, reset, or routing actions. Use `--quota-axi PATH` when
-the CLI is not on `PATH`.
+scopes are excluded; a missing, ambiguous, or unknown primary scope hides the bar.
+Bars and provider names shorten below 100 columns, with initials in the smallest
+layout. `—` means no displayable quota evidence.
+TShepherd invokes `quota-axi` locally with credential refresh disabled, caches
+reads for 90 seconds, and hides observations older than 120 seconds. Failed reads
+clear the quota display; results reported as stale are excluded. It never starts
+login, burn, reset, or routing actions. Use `--quota-axi PATH` when the CLI is not
+on `PATH`.
 
 Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh,
 and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
