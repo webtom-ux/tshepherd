@@ -274,3 +274,44 @@ Readers. Die Stale-PID-Tests stellen die relevante Zeit-/Generationsbedingung
 kontrolliert her; die Restart-Prüfung verwendet dagegen einen echten benannten
 Server-Neustart. Raw-Client-Evidenz und ausgewählte Owner-Beobachtungen liegen
 im [Session-Evidenzverzeichnis](#isolierter-herdr-live-test).
+
+## Modelllabels: echte PTY-UI mit synthetischer Quelle
+
+Am 2026-09-13 wurde der zuvor gemeldete fehlende Lab-Helper reproduziert:
+`env -u HERDR_LAB_HELPER bash tests/herdr-lab.sh` endet vor Provisioning mit
+`Set HERDR_LAB_HELPER to Firstmate bin/fm-herdr-lab.sh`. Das ist eine fehlende
+Live-Testvoraussetzung, kein reproduzierter Produktfehler. Für diese Modellabnahme
+wurde ausdrücklich eine deterministische Quelle in der echten PTY-UI freigegeben.
+
+Reproduzierbare, gezielte Prüfung ohne Herdr-Aufrufe:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 tests/model_labels_pty.py
+```
+
+Alle **21 Fälle bestanden**: sieben Modellfälle jeweils auf 120×24, 40×24 und
+28×24. `curses.wrapper`, `tui`, Poller, Source und Rendering laufen tatsächlich;
+`instr` liest nach `refresh` die gezeichneten Fensterzellen. j/k/q gelangen über
+den PTY-Master zur echten Eingabeschleife. Die Prüfung verlangt beide sichtbaren
+Modell-/Effortlabels (Firstmate und Worker), Wechsel der Auswahl, den Workerzähler
+und natives idle; bei 120 Spalten zusätzlich bündige Model-/Live-Spalten.
+
+| Abnahmeszenario | Beobachtete Labels in Firstmate- und Workerzeile |
+| --- | --- |
+| Feste Grok-/Claude-Namen | `Grok·H`, `Claude·M` |
+| Bestehender Name hat Vorrang (`provider/claude-astra-5`) | `Astra·M` |
+| Generischer, begrenzter Name; eingebettetes grok ohne festen Treffer | `Gemini·H`, `Long-u·XH`, `Megrok·L` |
+| Keine bestätigte Runtime-Auswahl | `?·?` |
+| Breite und schmale Ansicht | Alle sieben Labels vollständig bei allen drei Breiten |
+
+**Evidenzgrenze:** echte curses-UI und PTY-Eingabe, **synthetische Quelle**.
+Der testlokale Runner liefert Fleet-, Herdr- und Identity-Reader-Antworten;
+Source prüft diese mit unveränderten Produktionsguards. Es werden weder echte
+Firstmate-/KI-Prozesse noch OS-Owner-Erkennung oder Herdr-Client-Fokus bewiesen.
+Kein Fokus wird ausgelöst, keine Flotte oder Lifecycle-Funktion angesprochen.
+Die zwei gezielten bestehenden Tests
+`SourceTests.test_probe_collects_exact_session_model_and_effort_only` und
+`PrimaryTests.test_primary_without_unique_runtime_session_stays_unknown_model`
+bestanden ebenfalls. Produktionscode wurde nicht geändert. Zellaufnahmen und
+ANSI-Mitschnitte entstehen temporär innerhalb des Worktrees und werden nach dem
+Test entfernt; es wurde keine vollständige Suite ausgeführt.
