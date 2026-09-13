@@ -206,6 +206,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(row.outcome, 'working')
         self.assertEqual(app.counters([row])['done'], 1)
         self.assertEqual(app.counters([row])['completed'], 0)
+        self.assertIn('ready for input, unseen', row.reason)
         self.runner.calls.clear()
         self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'w1:t1', '--session', 'named'], self.runner.calls)
@@ -217,6 +218,32 @@ class SourceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.source.focus(app.identity(self.task))
                 self.assertFalse(any('focus' in call for call in self.runner.calls))
+
+    def test_terminal_render_distinguishes_done_idle_and_true_unknown(self):
+        expected = {
+            'en': ('done', 'ready for input, unseen', 'idle', 'unknown'),
+            'de': ('bereit', 'bereit für Eingabe, ungesehen', 'ruhend', 'unklar'),
+        }
+        self.addCleanup(app.set_language, 'en')
+        for language, labels in expected.items():
+            with self.subTest(language=language):
+                app.set_language(language)
+                rendered = {}
+                for raw in ('done', 'idle', 'unclassified'):
+                    self.runner.native = raw
+                    native = self.source.probe(self.task, time.monotonic() + 10)
+                    row = app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0]
+                    view = app.View(snapshot=self.snapshot, natives={self.task['id']: native},
+                                    last_success=time.time(), selected=row.key)
+                    rendered[raw] = '\n'.join(
+                        text for text, _ in app.render_lines(view, [row], 140, 24, False, time.time()))
+                self.assertIn(labels[0], rendered['done'])
+                self.assertIn(labels[1], rendered['done'])
+                self.assertIn(labels[2], rendered['idle'])
+                self.assertNotIn(labels[1], rendered['idle'])
+                self.assertIn(labels[3], rendered['unclassified'])
+                self.assertIn(app.tr('Native Aktivität unbekannt · Herdr-Registrierung prüfen'),
+                              rendered['unclassified'])
 
     def test_real_default_null_and_uppercase_handles(self):
         self.runner.pane = 'wA:p2'
