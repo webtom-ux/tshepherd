@@ -100,8 +100,10 @@ Zähler sind explizit Beobachtungszahlen; `completed` gehört zur Aufgabenachse 
 Projektgruppen tragen eigene Farben und eingerückte einzeilige Worker. Agent, Model, Live,
 Aufgabe und letzte Aktivität stehen auf festen Zellspalten. Die Model-Zelle liest
 bei Pi ausschließlich eine innerhalb der bestätigten Prozessgeneration eindeutige
-Sessiondatei des exakten Worktrees und folgt deren aktiver Eintragskette; mehrere
-Sessions derselben Generation, fehlende oder nicht unterstützte Runtime-Evidenz bleiben `?`.
+Sessiondatei des exakten Worktrees und folgt deren aktiver Eintragskette.
+Die benutzerseitige Bedeutung der Modell-/Effortlabels beschreibt die
+[README](../README.md#launch-with-just-tshepherd); die Ableitung implementiert
+`compact_model` in `tshepherd.py`.
 Launch-/Dispatch-Metadaten sind kein Ersatz für die aktuelle Auswahl. Quelltextfelder werden
 von Steuerzeichen bereinigt; Formatierungsabstände bleiben beim Kürzen erhalten.
 Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
