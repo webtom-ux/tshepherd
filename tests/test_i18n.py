@@ -59,9 +59,9 @@ class LanguageTests(unittest.TestCase):
         self.assertIs(argparse._, original)
 
     def test_owned_ui_labels_both_languages_and_external_text_untouched(self):
-        for language, header, duration, refresh, state, too_small in [
-            ('en', 'Latest known activity', 'Time', 'R refresh', 'waiting', 'terminal too small'),
-            ('de', 'Letzte bekannte Aktivität', 'Zeit', 'R neu', 'wartet', 'Terminal zu klein')]:
+        for language, header, duration, refresh, state, quota, too_small in [
+            ('en', 'Latest known activity', 'Time', 'R refresh', 'waiting', 'Quota', 'terminal too small'),
+            ('de', 'Letzte bekannte Aktivität', 'Zeit', 'R neu', 'wartet', 'Kontingent', 'Terminal zu klein')]:
             with self.subTest(language=language):
                 i18n.set_language(language)
                 snapshot, natives = collect(type('Source', (), {'config': app.Config('/example', '/example')})())
@@ -70,14 +70,16 @@ class LanguageTests(unittest.TestCase):
                     task['backlog']['repo'] = 'Projekt unbekannt'
                     task['backlog']['title'] = 'nicht gemessen'
                     task['current_state']['detail'] = 'Befehl fehlgeschlagen'
-                view = app.View(snapshot=snapshot, natives=natives, last_success=time.time())
+                view = app.View(snapshot=snapshot, natives=natives, last_success=time.time(),
+                                quotas=[app.Quota('codex', 42, time.time())])
                 rows = app.overview_rows(view, time.time(), 45)
                 for width, height in [(140, 30), (40, 30), (28, 16)]:
                     frame = app.render_lines(view, rows, width, height, False, time.time())
                     self.assertEqual(len(frame), height)
                     self.assertTrue(all(app.cells(line) <= width - 1 for line, _ in frame))
                 text = '\n'.join(line for line, _ in app.render_lines(view, rows, 140, 30, False, time.time()))
-                for expected in [header, duration, refresh, state, 'Projekt unbekannt', 'nicht gemessen', 'Befehl fehlgeschlagen']:
+                for expected in [header, duration, refresh, state, quota, 'Codex', '42%',
+                                 'Projekt unbekannt', 'nicht gemessen', 'Befehl fehlgeschlagen']:
                     self.assertIn(expected, text)
                 self.assertNotIn('Time/Task', text)
                 self.assertNotIn('Zeit/Aufg.', text)
