@@ -73,8 +73,10 @@ values are kept as reported.
 
 Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh,
 and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
-runtime model and thinking effort (`Sol·M` means Sol with medium effort); `?`
-marks a value that could not be established. Pi sessions are read only when one
+runtime model and thinking effort (`Sol·M` means Sol with medium effort). Known
+Astra, Terra, Sol, Luna, Grok, and Claude names use fixed labels; other non-empty
+runtime model IDs get a short label derived from their model-ID component. `?`
+marks an empty or unconfirmed value. Pi sessions are read only when one
 session file is generation-unique for the exact verified process and worktree;
 ambiguous sessions and other harnesses remain unknown. Native `done` means ready
 for input with an unseen response and stays distinct from `idle`. The unseen-response
