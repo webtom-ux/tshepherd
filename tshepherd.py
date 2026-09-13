@@ -25,6 +25,11 @@ SCHEMA = "fm-fleet-snapshot.v1"
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "login"}
 PRIMARY = ("firstmate-primary",)  # Tuple namespace cannot collide with worker IDs.
+MODEL_NAMES = ("Astra", "Terra", "Sol", "Luna")
+EFFORT_NAMES = {
+    "none": "N", "off": "O", "minimal": "Mn", "low": "L", "medium": "M",
+    "high": "H", "xhigh": "XH", "max": "Mx", "ultra": "U",
+}
 
 
 def clean(value):
@@ -32,6 +37,16 @@ def clean(value):
     if not isinstance(value, str):
         return ""
     return " ".join("".join(c if c.isprintable() else " " for c in value).split())
+
+
+def compact_model(model, effort):
+    """Render only recognized runtime model names and explicit effort values."""
+    value = clean(model)
+    lowered = value.casefold()
+    name = next((known for known in MODEL_NAMES
+                 if re.search(r"(?:^|[^a-z])" + known.casefold() + r"(?:$|[^a-z])", lowered)), "?")
+    level = EFFORT_NAMES.get(clean(effort).casefold(), "?")
+    return name + "·" + level
 
 
 def fit(text, width):
@@ -135,6 +150,8 @@ class Native:
     observed: float = 0
     binding: tuple = ()
     physical: tuple = ()
+    model: str = ""
+    effort: str = ""
 
 
 @dataclass
@@ -147,6 +164,7 @@ class Row:
     activity: str
     reason: str
     key: tuple
+    model: str
 
 
 @dataclass
@@ -159,12 +177,15 @@ class PrimaryRow:
     session: str = ""
     pane: str = ""
     physical: tuple = ()
+    model: str = ""
+    effort: str = ""
 
 
 def overview_rows(view, now, ttl):
     primary = view.natives.get(PRIMARY, PrimaryRow())
     if view.error or not 0 <= now - primary.observed <= ttl:
-        primary = replace(primary, live="unknown", reason=tr("Firstmate nicht verfügbar: Messung fehlt/veraltet"))
+        primary = replace(primary, live="unknown", reason=tr("Firstmate nicht verfügbar: Messung fehlt/veraltet"),
+                          model="", effort="")
     return [primary] + rows_for(view.snapshot, view.natives, now, ttl, bool(view.error))
 
 
@@ -185,14 +206,16 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
         elif backlog.get("state") == "done":
             outcome = "done"
         native = natives.get(task["id"], Native())
+        native_valid = not stale and 0 <= now - native.observed <= ttl and native.binding == identity(task)
         live = native.state
-        if stale or not 0 <= now - native.observed <= ttl or native.binding != identity(task):
+        if not native_valid:
             live = "unknown"
             reason = reason or tr("Native-Messung fehlt/veraltet")
         if live not in {"working", "waiting", "idle"}:
             live = "unknown"
         if live == "unknown":
             reason = reason or native.detail
+        model = compact_model(native.model, native.effort) if native_valid else compact_model("", "")
         activity = clean(current.get("detail"))
         if not activity:
             log = task.get("paths", {}).get("status_log", {})
@@ -203,7 +226,7 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
                     if activity:
                         activity = tr("Historie: ") + activity
         rows.append(Row(task, project, title, live, outcome, activity or tr("keine Aktivität geliefert"),
-                        clean(reason), identity(task)))
+                        clean(reason), identity(task), model))
     return sorted(rows, key=lambda row: (row.project.casefold(), row.title.casefold(), row.task["id"]))
 
 
@@ -357,7 +380,8 @@ class Source:
             detail = (tr("Herdr native: done · beendet, keine Live-Aussage") if raw == "done"
                       else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen") if state == "unknown"
                       else tr("Herdr native: ") + clean(raw))
-            return Native(state, detail, time.time(), identity(task), physical)
+            return Native(state, detail, time.time(), identity(task), physical,
+                          clean(agent.get("model")), clean(agent.get("effort") or agent.get("thinking_level")))
         except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError) as error:
             reason = clean(str(error)) if isinstance(error, ValueError) else tr("Quelle nicht lesbar · Firstmate-/Herdr-Zugriff prüfen")
             return Native(detail=reason, observed=time.time(), binding=identity(task))
@@ -426,7 +450,8 @@ class Source:
             reason = (tr("Herdr native: done · beendet, keine Live-Aussage") if agent.get("agent_status") == "done"
                       else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen")) if state == "unknown" else tr("Primärer Chat · Enter wechselt")
             return PrimaryRow(key, state, reason, time.time(),
-                              agent["agent"], session, pane, physical)
+                              agent["agent"], session, pane, physical,
+                              clean(agent.get("model")), clean(agent.get("effort") or agent.get("thinking_level")))
         except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError, KeyError) as error:
             reason = clean(str(error)) if isinstance(error, ValueError) else tr("Quelle nicht lesbar · Owner-/Herdr-Zugriff prüfen")
             return PrimaryRow(reason=tr("Firstmate nicht verfügbar: ") + reason, observed=time.time())
@@ -774,21 +799,22 @@ def render_lines(view, rows, width, height, busy, now):
         mark = ">" if primary.key == view.selected else " "
         status = tr(primary.live) if primary.physical else tr("nicht verfügbar")
         color = STATES.index(primary.live) + 1
+        model = compact_model(primary.model, primary.effort) if primary.physical else compact_model("", "")
         if wide:
             lines.append(styled((f"    {mark} ◆ Firstmate", color),
-                                ("  " + primary.provider + " · ", 7), (status, color),
+                                ("  " + primary.provider + " · " + model + " · ", 7), (status, color),
                                 (" · " + primary.reason, 7)))
         else:
             lines.append(styled((f"    {mark} ◆ Firstmate", color)))
-            lines.append(styled(("       " + status, color)))
+            lines.append(styled(("       " + model + " · " + status, color)))
         if wide or height - len(lines) - 4 > 2:
             lines.append(blank)
     title_width = min(36, max(18, width // 4))
-    prefix_width = 7 + title_width + 2 + 7 + 2 + 7 + 2 + 8 + 2
+    prefix_width = 7 + title_width + 2 + 7 + 2 + 8 + 2 + 7 + 2 + 8 + 2
     if wide:
         lines.append(styled(("  #    " + column("Worker", title_width) + "  " + column("Agent", 7)
-                             + "  " + column("Live", 7) + "  " + column(tr("Aufgabe"), 8)
-                             + tr("  Letzte bekannte Aktivität"), 7)))
+                             + "  " + column(tr("Model"), 8) + "  " + column("Live", 7)
+                             + "  " + column(tr("Aufgabe"), 8) + tr("  Letzte bekannte Aktivität"), 7)))
     body, project, chosen, chosen_end = [], None, None, None
     group_number = 0
     for number, row in enumerate(rows, 1):
@@ -809,13 +835,15 @@ def render_lines(view, rows, width, height, busy, now):
             activity = row.reason + " · " + row.activity if row.reason else row.activity
             body.append(styled(*lead, (column(row.title, title_width), state_color), ("  ", 0),
                                (column(clean(row.task.get("harness")), 7), 9), ("  ", 0),
+                               (column(row.model, 8), 7), ("  ", 0),
                                (column(tr(row.live), 7), state_color), ("  ", 0),
                                (column(row.outcome, 8), 4 if row.outcome == "done" else 7), ("  ", 0),
                                (fit(activity, width - prefix_width - 1), 7)))
         else:
             body.append(styled(*lead, (row.title, state_color)))
-            body.append(styled((tr("       {live} · Aufgabe {outcome} · ",
-                                   live=tr(row.live), outcome=row.outcome), state_color), (row.activity, 7)))
+            body.append(styled((tr("       {model} · {live} · Aufgabe {outcome} · ",
+                                   model=row.model, live=tr(row.live), outcome=row.outcome), state_color),
+                               (row.activity, 7)))
         if row.key == view.selected:
             chosen_end = len(body) - 1
     if not rows:

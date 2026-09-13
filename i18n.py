@@ -86,8 +86,9 @@ EN = {
     " · lädt": " · loading",
     "nicht verfügbar": "unavailable",
     "Aufgabe": "Task",
+    "Model": "Model",
     "  Letzte bekannte Aktivität": "  Latest known activity",
-    "       {live} · Aufgabe {outcome} · ": "       {live} · task {outcome} · ",
+    "       {model} · {live} · Aufgabe {outcome} · ": "       {model} · {live} · task {outcome} · ",
     "  Keine Worker gemessen": "  No workers measured",
     "  Keine Worker im Snapshot": "  No workers in snapshot",
     "Inventar unvollständig: ": "incomplete inventory: ",
@@ -127,6 +128,7 @@ EN = {
 
 DE = {
     "Firstmate fleet": "Firstmate-Flotte",
+    "Model": "Modell",
     "Herdr native: ": "Herdr nativ: ",
     "Herdr native: done · beendet, keine Live-Aussage": "Herdr nativ: done · beendet, keine Live-Aussage",
     "working": "aktiv", "waiting": "wartet", "idle": "ruhend",
