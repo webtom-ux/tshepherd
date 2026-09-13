@@ -88,6 +88,31 @@ def fresh(observation, now, ttl):
             and -2 <= now - observed <= ttl)
 
 
+def process_start(value):
+    """Convert a confirmed Darwin process-generation timestamp, or fail closed."""
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return 0
+    started = value / 10**9
+    return started if started <= time.time() + 2 else 0
+
+
+def compact_duration(started, now):
+    """Compact wall time from a confirmed start; unknown/future values stay unknown."""
+    if not isinstance(started, (int, float)) or isinstance(started, bool) or started <= 0:
+        return "—"
+    elapsed = now - started
+    if elapsed < -2:
+        return "—"
+    seconds = max(0, int(elapsed))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 60 * 60:
+        return f"{seconds // 60}m"
+    if seconds < 24 * 60 * 60:
+        return f"{seconds // (60 * 60)}h"
+    return f"{seconds // (24 * 60 * 60)}d"
+
+
 def endpoint(task):
     if task.get("backend") != "herdr" or task.get("remote"):
         raise ValueError(tr("kein lokaler Herdr-Endpunkt"))
@@ -165,6 +190,8 @@ class Native:
     physical: tuple = ()
     model: str = ""
     effort: str = ""
+    session_started: float = 0
+    task_started: float = 0
 
 
 @dataclass
@@ -178,6 +205,8 @@ class Row:
     reason: str
     key: tuple
     model: str
+    session_started: float = 0
+    task_started: float = 0
 
 
 @dataclass
@@ -192,13 +221,14 @@ class PrimaryRow:
     physical: tuple = ()
     model: str = ""
     effort: str = ""
+    session_started: float = 0
 
 
 def overview_rows(view, now, ttl):
     primary = view.natives.get(PRIMARY, PrimaryRow())
     if view.error or not 0 <= now - primary.observed <= ttl:
         primary = replace(primary, live="unknown", reason=tr("Firstmate nicht verfügbar: Messung fehlt/veraltet"),
-                          model="", effort="")
+                          model="", effort="", session_started=0)
     return [primary] + rows_for(view.snapshot, view.natives, now, ttl, bool(view.error))
 
 
@@ -233,6 +263,8 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
             # Keep that native explanation visible without treating it as task activity.
             reason = " · ".join(detail for detail in (reason, native.detail) if detail)
         model = compact_model(native.model, native.effort) if native_valid else compact_model("", "")
+        session_started = native.session_started if native_valid else 0
+        task_started = native.task_started if native_valid else 0
         activity = clean(current.get("detail"))
         if not activity:
             log = task.get("paths", {}).get("status_log", {})
@@ -243,7 +275,7 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
                     if activity:
                         activity = tr("Historie: ") + activity
         rows.append(Row(task, project, title, live, outcome, activity or tr("keine Aktivität geliefert"),
-                        clean(reason), identity(task), model))
+                        clean(reason), identity(task), model, session_started, task_started))
     return sorted(rows, key=lambda row: (row.project.casefold(), row.title.casefold(), row.task["id"]))
 
 
@@ -379,10 +411,11 @@ class Source:
                         and env.get("HERDR_WORKSPACE_ID") == found.get("workspace_id")
                         and env.get("HERDR_TAB_ID") == found.get("tab_id")
                         and isinstance(runtime, dict)):
-                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort"))))
+                    started = process_start(result.get("process", {}).get("start"))
+                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort")), started))
             except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                 continue
-        return matches[0] if len(matches) == 1 else ("", "")
+        return matches[0] if len(matches) == 1 else ("", "", 0)
 
     def probe(self, task, deadline, parallel=False):
         try:
@@ -429,15 +462,19 @@ class Source:
                 raise ValueError(tr("Prozessbeleg fehlt / Shell-only (Registrierung eventuell veraltet)"))
             # Focus uses this probe too; runtime display metadata must not extend
             # its latency-sensitive read path.
-            model, effort = (("", "") if parallel else
-                             self.runtime_selection(task, foreground, session, pane, found, socket, deadline))
+            model, effort, started = (("", "", 0) if parallel else
+                                      self.runtime_selection(task, foreground, session, pane, found, socket, deadline))
             raw = agent.get("agent_status")
             state = {"working": "working", "idle": "idle", "blocked": "waiting", "done": "done"}.get(raw, "unknown")
             physical = tuple(found[k] for k in ("workspace_id", "tab_id", "terminal_id"))
             detail = (tr("Herdr native: done · bereit für Eingabe, ungesehen") if raw == "done"
                       else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen") if state == "unknown"
                       else tr("Herdr native: ") + clean(raw))
-            return Native(state, detail, time.time(), identity(task), physical, model, effort)
+            # The exact process is both the confirmed agent session and this
+            # immutable FM_TASK_ID/spawn binding. No snapshot observation time is
+            # treated as a start time.
+            return Native(state, detail, time.time(), identity(task), physical, model, effort,
+                          started, started)
         except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError) as error:
             reason = clean(str(error)) if isinstance(error, ValueError) else tr("Quelle nicht lesbar · Firstmate-/Herdr-Zugriff prüfen")
             return Native(detail=reason, observed=time.time(), binding=identity(task))
@@ -519,9 +556,10 @@ class Source:
                     runtime = self.process_runtime(owner_pid, exact_processes[0]["cwd"], agent["agent"], deadline).get("runtime", {})
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                     runtime = {}
+            started = process_start(owner.get("process", {}).get("start"))
             return PrimaryRow(key, state, reason, time.time(),
                               agent["agent"], session, pane, physical,
-                              clean(runtime.get("model")), clean(runtime.get("effort")))
+                              clean(runtime.get("model")), clean(runtime.get("effort")), started)
         except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError, KeyError) as error:
             reason = clean(str(error)) if isinstance(error, ValueError) else tr("Quelle nicht lesbar · Owner-/Herdr-Zugriff prüfen")
             return PrimaryRow(reason=tr("Firstmate nicht verfügbar: ") + reason, observed=time.time())
@@ -880,11 +918,12 @@ def render_lines(view, rows, width, height, busy, now):
         if wide or height - len(lines) - 4 > 2:
             lines.append(blank)
     title_width = min(36, max(18, width // 4))
-    prefix_width = 7 + title_width + 2 + 7 + 2 + MODEL_COLUMN_WIDTH + 2 + 7 + 2 + 8 + 2
+    prefix_width = 7 + title_width + 2 + 7 + 2 + MODEL_COLUMN_WIDTH + 2 + 7 + 2 + 8 + 2 + 10 + 2
     if wide:
         lines.append(styled(("  #    " + column("Worker", title_width) + "  " + column("Agent", 7)
                              + "  " + column(tr("Model"), MODEL_COLUMN_WIDTH) + "  " + column("Live", 7)
-                             + "  " + column(tr("Aufgabe"), 8) + tr("  Letzte bekannte Aktivität"), 7)))
+                             + "  " + column(tr("Aufgabe"), 8) + "  " + column(tr("Zeit/Aufg."), 10)
+                             + tr("  Letzte bekannte Aktivität"), 7)))
     body, project, chosen, chosen_end = [], None, None, None
     group_number = 0
     for number, row in enumerate(rows, 1):
@@ -908,11 +947,13 @@ def render_lines(view, rows, width, height, busy, now):
                                (column(row.model, MODEL_COLUMN_WIDTH), 7), ("  ", 0),
                                (column(tr(row.live), 7), state_color), ("  ", 0),
                                (column(row.outcome, 8), 4 if row.outcome == "done" else 7), ("  ", 0),
+                               (column(compact_duration(row.task_started, now), 10), 7), ("  ", 0),
                                (fit(activity, width - prefix_width - 1), 7)))
         else:
             body.append(styled(*lead, (row.title, state_color)))
-            body.append(styled((tr("       {model} · {live} · Aufgabe {outcome} · ",
-                                   model=row.model, live=tr(row.live), outcome=row.outcome), state_color),
+            body.append(styled((tr("       {model} · {duration} · {live} · Aufgabe {outcome} · ",
+                                   model=row.model, duration=compact_duration(row.task_started, now),
+                                   live=tr(row.live), outcome=row.outcome), state_color),
                                (row.activity, 7)))
         if row.key == view.selected:
             chosen_end = len(body) - 1
@@ -932,10 +973,14 @@ def render_lines(view, rows, width, height, busy, now):
     inventory = view.snapshot.get("main_inventory", {})
     if inventory.get("valid") is False:
         warning = tr("Inventar unvollständig: ") + clean(inventory.get("reason")) + (" | " + warning if warning else "")
-    if not warning and primary is not None and primary.key == view.selected:
-        warning = primary.reason
-    if not warning and selected:
-        warning = f"{selected.task['id']} · {selected.reason or selected.activity}"
+    if primary is not None and primary.key == view.selected:
+        detail = warning or primary.reason
+        warning = tr("Session {session} · ", session=compact_duration(primary.session_started, now)) + detail
+    elif selected:
+        detail = warning or f"{selected.task['id']} · {selected.reason or selected.activity}"
+        warning = tr("Session {session} · Aufgabe {task} · ",
+                     session=compact_duration(selected.session_started, now),
+                     task=compact_duration(selected.task_started, now)) + detail
     lines.append(styled(("  " + "─" * (width - 5), 7)))
     lines.append(styled(("  " + (warning or tr("Nur eigenes FM_HOME; Secondmate-Kinder nicht rekursiv")), 5 if view.error else 7)))
     lines.append(styled((tr("  ● working  ! waiting=blocked  ○ idle  ✓ done  ? unknown"), 7),
