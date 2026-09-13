@@ -23,6 +23,7 @@ from i18n import set_language, tr
 
 SCHEMA = "fm-fleet-snapshot.v1"
 STATES = ("working", "waiting", "idle", "completed", "unknown")
+LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "login"}
 PRIMARY = ("firstmate-primary",)  # Tuple namespace cannot collide with worker IDs.
 MODEL_NAMES = ("Astra", "Terra", "Sol", "Luna")
@@ -211,7 +212,7 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
         if not native_valid:
             live = "unknown"
             reason = reason or tr("Native-Messung fehlt/veraltet")
-        if live not in {"working", "waiting", "idle"}:
+        if live not in {"working", "waiting", "idle", "done"}:
             live = "unknown"
         if live == "unknown":
             reason = reason or native.detail
@@ -233,6 +234,7 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
 def counters(rows):
     # Completion is a separate dimension, not an exclusive live-agent state.
     result = {state: 0 for state in STATES}
+    result["done"] = 0
     for row in rows:
         if isinstance(row, PrimaryRow):
             continue
@@ -332,6 +334,40 @@ class Source:
             return [c.lab_helper, "run", c.lab_session, *args]
         return [c.herdr, *args, "--session", session]
 
+    def process_runtime(self, pid, cwd, harness, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(tr("Messbudget verbraucht"))
+        return self.runner.run([
+            sys.executable, str(Path(__file__).with_name("primary_identity.py")),
+            "--runtime", str(pid), cwd, harness], min(3, remaining))
+
+    def runtime_selection(self, task, foreground, session, pane, found, socket, deadline):
+        """Read only exact pane PIDs and accept an environment bound to this task."""
+        matches = []
+        for process in foreground[:8]:
+            pid, cwd = process.get("pid"), process.get("cwd")
+            if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1
+                    or not isinstance(cwd, str) or not cwd):
+                continue
+            try:
+                result = self.process_runtime(pid, cwd, task.get("harness", ""), deadline)
+                env = result.get("environment", {})
+                runtime = result.get("runtime", {})
+                expected_session = env.get("HERDR_SESSION")
+                if session == "default" and "HERDR_SESSION" not in env:
+                    expected_session = "default"
+                if (env.get("FM_TASK_ID") == task["id"] and env.get("HERDR_ENV") == "1"
+                        and expected_session == session and env.get("HERDR_SOCKET_PATH") == socket
+                        and env.get("HERDR_PANE_ID") == pane
+                        and env.get("HERDR_WORKSPACE_ID") == found.get("workspace_id")
+                        and env.get("HERDR_TAB_ID") == found.get("tab_id")
+                        and isinstance(runtime, dict)):
+                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort"))))
+            except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+                continue
+        return matches[0] if len(matches) == 1 else ("", "")
+
     def probe(self, task, deadline, parallel=False):
         try:
             session, pane = endpoint(task)
@@ -355,6 +391,7 @@ class Source:
             status = next(replies)
             if not session_confirmed(status, session):
                 raise ValueError(tr("Session/Protokoll nicht bestätigt"))
+            socket = status["server"]["socket"]
             info = next(replies).get("result", {})
             found = info.get("pane", {})
             if info.get("type") != "pane_info" or found.get("pane_id") != pane:
@@ -374,19 +411,22 @@ class Source:
                     or not all(isinstance(p, dict) and p.get("name") for p in foreground)
                     or all(Path(p["name"]).name.lstrip("-") in SHELLS for p in foreground)):
                 raise ValueError(tr("Prozessbeleg fehlt / Shell-only (Registrierung eventuell veraltet)"))
+            # Focus uses this probe too; runtime display metadata must not extend
+            # its latency-sensitive read path.
+            model, effort = (("", "") if parallel else
+                             self.runtime_selection(task, foreground, session, pane, found, socket, deadline))
             raw = agent.get("agent_status")
-            state = {"working": "working", "idle": "idle", "blocked": "waiting"}.get(raw, "unknown")
+            state = {"working": "working", "idle": "idle", "blocked": "waiting", "done": "done"}.get(raw, "unknown")
             physical = tuple(found[k] for k in ("workspace_id", "tab_id", "terminal_id"))
-            detail = (tr("Herdr native: done · beendet, keine Live-Aussage") if raw == "done"
+            detail = (tr("Herdr native: done · bereit für Eingabe, ungesehen") if raw == "done"
                       else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen") if state == "unknown"
                       else tr("Herdr native: ") + clean(raw))
-            return Native(state, detail, time.time(), identity(task), physical,
-                          clean(agent.get("model")), clean(agent.get("effort") or agent.get("thinking_level")))
+            return Native(state, detail, time.time(), identity(task), physical, model, effort)
         except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError) as error:
             reason = clean(str(error)) if isinstance(error, ValueError) else tr("Quelle nicht lesbar · Firstmate-/Herdr-Zugriff prüfen")
             return Native(detail=reason, observed=time.time(), binding=identity(task))
 
-    def primary(self, deadline):
+    def primary(self, deadline, include_runtime=True):
         """Only the explicit home's current lock owner can supply a candidate."""
         try:
             def run(argv):
@@ -432,8 +472,10 @@ class Source:
                 raise ValueError(tr("Owner-Endpunkt/Registrierung nicht bestätigt"))
             process = call("pane", "process-info", "--pane", pane).get("result", {})
             details = process.get("process_info", {})
+            foreground = details.get("foreground_processes", [])
             shell = details.get("shell_pid")
             if (process.get("type") != "pane_process_info" or details.get("pane_id") != pane
+                    or not isinstance(foreground, list)
                     or not isinstance(shell, int) or isinstance(shell, bool) or shell <= 1):
                 raise ValueError(tr("Native Owner-Shell nicht bestätigt"))
             # The reader rechecks lock, process generation, selected environment,
@@ -445,19 +487,31 @@ class Source:
             if (check.get("type") != "pane_info" or exact.get("pane_id") != pane
                     or tuple(exact.get(k) for k in ("workspace_id", "tab_id", "terminal_id")) != physical):
                 raise ValueError(tr("Physischer Owner-Endpunkt während Prüfung geändert"))
-            key = (PRIMARY, json.dumps(owner, sort_keys=True), agent["agent"], physical)
-            state = {"working": "working", "blocked": "waiting", "idle": "idle"}.get(agent.get("agent_status"), "unknown")
-            reason = (tr("Herdr native: done · beendet, keine Live-Aussage") if agent.get("agent_status") == "done"
-                      else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen")) if state == "unknown" else tr("Primärer Chat · Enter wechselt")
+            owner_identity = {key: value for key, value in owner.items() if key != "runtime"}
+            key = (PRIMARY, json.dumps(owner_identity, sort_keys=True), agent["agent"], physical)
+            raw = agent.get("agent_status")
+            state = {"working": "working", "blocked": "waiting", "idle": "idle", "done": "done"}.get(raw, "unknown")
+            reason = (tr("Herdr native: done · bereit für Eingabe, ungesehen") if raw == "done"
+                      else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen") if state == "unknown"
+                      else tr("Primärer Chat · Enter wechselt"))
+            runtime = {}
+            owner_pid = owner.get("process", {}).get("pid")
+            exact_processes = [p for p in foreground if isinstance(p, dict) and p.get("pid") == owner_pid
+                               and isinstance(p.get("cwd"), str) and p["cwd"]]
+            if include_runtime and len(exact_processes) == 1:
+                try:
+                    runtime = self.process_runtime(owner_pid, exact_processes[0]["cwd"], agent["agent"], deadline).get("runtime", {})
+                except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+                    runtime = {}
             return PrimaryRow(key, state, reason, time.time(),
                               agent["agent"], session, pane, physical,
-                              clean(agent.get("model")), clean(agent.get("effort") or agent.get("thinking_level")))
+                              clean(runtime.get("model")), clean(runtime.get("effort")))
         except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError, KeyError) as error:
             reason = clean(str(error)) if isinstance(error, ValueError) else tr("Quelle nicht lesbar · Owner-/Herdr-Zugriff prüfen")
             return PrimaryRow(reason=tr("Firstmate nicht verfügbar: ") + reason, observed=time.time())
 
     def primary_target(self, selected):
-        current = self.primary(time.monotonic() + 12)
+        current = self.primary(time.monotonic() + 12, include_runtime=False)
         if not current.physical or current.key != selected:
             raise ValueError(tr("Fokus verweigert: Firstmate entfernt/ersetzt/unbestätigt · ") + current.reason)
         return current.provider, "Firstmate", current, current.session, current.pane
@@ -798,7 +852,7 @@ def render_lines(view, rows, width, height, busy, now):
     if primary is not None:
         mark = ">" if primary.key == view.selected else " "
         status = tr(primary.live) if primary.physical else tr("nicht verfügbar")
-        color = STATES.index(primary.live) + 1
+        color = LIVE_STATES.index(primary.live) + 1
         model = compact_model(primary.model, primary.effort) if primary.physical else compact_model("", "")
         if wide:
             lines.append(styled((f"    {mark} ◆ Firstmate", color),
@@ -827,8 +881,8 @@ def render_lines(view, rows, width, height, busy, now):
             group_number += 1
         if row.key == view.selected:
             chosen = len(body)
-        state_color = STATES.index(row.live) + 1
-        glyph = {"working": "●", "waiting": "!", "idle": "○", "unknown": "?"}[row.live]
+        state_color = LIVE_STATES.index(row.live) + 1
+        glyph = {"working": "●", "waiting": "!", "idle": "○", "done": "✓", "unknown": "?"}[row.live]
         mark = ">" if row.key == view.selected else " "
         lead = [(f"{number:>3} {mark}", 7), (glyph + " ", state_color)]
         if wide:
@@ -868,7 +922,8 @@ def render_lines(view, rows, width, height, busy, now):
         warning = f"{selected.task['id']} · {selected.reason or selected.activity}"
     lines.append(styled(("  " + "─" * (width - 5), 7)))
     lines.append(styled(("  " + (warning or tr("Nur eigenes FM_HOME; Secondmate-Kinder nicht rekursiv")), 5 if view.error else 7)))
-    lines.append(styled((tr("  ● working  ! waiting=blocked  ○ idle  ? unknown"), 7), (tr("   completed=Aufgabe done"), 4)))
+    lines.append(styled((tr("  ● working  ! waiting=blocked  ○ idle  ✓ done  ? unknown"), 7),
+                        (tr("   completed=Aufgabe done"), 4)))
     keys = tr("  ↑/↓ j/k wählen · Enter Fokus · R neu erkennen · q / Ctrl+C") if wide else tr("  j/k · Enter · R neu · q")
     lines.append(styled((keys, 7)))
     return [(fit(text, width - 1), spans) for text, spans in lines[:height]]

@@ -46,12 +46,14 @@ JSON-`null` normalisiert. Fehlende Sessionfelder und widersprüchliche Socket-
 Namespaces werden abgelehnt. Öffentliche Pane-Handles verwenden Herdrs dokumentierte
 Großbuchstaben-Base32-Zeichen; die physische Roundtrip-Prüfung bleibt unverändert.
 Shell-only-Vordergrund oder fehlende Prozessinformationen reichen nicht aus, um
-veraltete Registrierungen als live zu bestätigen. Eine native Meldung ist dennoch
-keine semantische Aussage über laufende Tools; die UI benennt diese Grenze.
+veraltete Registrierungen als live zu bestätigen. Native `idle` und `done` sind
+beide eingabebereit; `done` bleibt als ungesehene Antwort sichtbar von `idle`
+getrennt. Eine native Meldung ist dennoch keine semantische Aussage über laufende
+Tools; die UI benennt diese Grenze.
 Eine erfolgreiche Prüfung liefert die physische Bindung unabhängig von der
 Aktivitätszuordnung. `Source.focus` verlangt diese Bindung, keinen bestimmten
-Live-Zustand; auch ein nicht zugeordneter nativer Status wie `done` verhindert
-deshalb den Fokus nicht. Alle nachfolgenden Eigentums-, Frische- und
+Live-Zustand; auch der eingabebereite Zustand `done` verhindert deshalb den
+Fokus nicht. Alle nachfolgenden Eigentums-, Frische- und
 Identitätsprüfungen bleiben erforderlich.
 
 `Poller` besitzt einen Collector und einen separaten Single-Flight-Fokusworker.
@@ -91,8 +93,12 @@ Die eigene Auswahlidentität und Zielprüfung für Firstmate beschreibt
 Die Ansicht zeigt Abrufalter, Datenfehler, Inventarlücken und unbekannte Zustände.
 Zähler sind explizit Beobachtungszahlen; `completed` gehört zur Aufgabenachse und
 überlappt mit Live-Zuständen. Farbige Zahlenblöcke stehen vertikal neben dem Branding,
-Projektgruppen tragen eigene Farben und eingerückte einzeilige Worker. Agent, Live,
-Aufgabe und letzte Aktivität stehen auf festen Zellspalten. Quelltextfelder werden
+Projektgruppen tragen eigene Farben und eingerückte einzeilige Worker. Agent, Model, Live,
+Aufgabe und letzte Aktivität stehen auf festen Zellspalten. Die Model-Zelle liest
+bei Pi ausschließlich eine innerhalb der bestätigten Prozessgeneration eindeutige
+Sessiondatei des exakten Worktrees und folgt deren aktiver Eintragskette; mehrere
+Sessions derselben Generation, fehlende oder nicht unterstützte Runtime-Evidenz bleiben `?`.
+Launch-/Dispatch-Metadaten sind kein Ersatz für die aktuelle Auswahl. Quelltextfelder werden
 von Steuerzeichen bereinigt; Formatierungsabstände bleiben beim Kürzen erhalten.
 Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
 die einzige Kodierung: Zustandswörter bleiben lesbar.
@@ -102,8 +108,9 @@ die einzige Kodierung: Zustandswörter bleiben lesbar.
 Die feste `PrimaryRow` steht unabhängig von Worker-Sortierung und Scrollposition
 über den Projektgruppen. Sie besitzt keine Task-Metadaten und keinen Outcome;
 alle bestehenden Zähler bleiben ausschließlich Worker-Zähler. Native Aktivität
-bleibt auch hier unabhängig von Fokusfähigkeit: natives `done` ist `unknown`,
-aber bei bestätigter Identität erreichbar. Fehlende oder veraltete Evidenz wird
+bleibt auch hier unabhängig von Fokusfähigkeit: natives `done` ist eingabebereit
+und als ungesehene Antwort sichtbar; bei bestätigter Identität bleibt es erreichbar.
+Fehlende oder veraltete Evidenz wird
 sichtbar unavailable/unknown, nie durch einen anderen Endpunkt ersetzt.
 
 Der aktuelle Fleet-Snapshot exportiert keine primäre Chat-Bindung.

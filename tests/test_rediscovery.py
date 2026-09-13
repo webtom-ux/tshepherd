@@ -95,8 +95,8 @@ class ReloadTests(unittest.TestCase):
             self.assertNotIn('secret', reason)
         runner.native = 'done'
         native = source.probe(task, time.monotonic() + 10)
-        self.assertEqual(native.state, 'unknown')
-        self.assertIn('ended', native.detail)
+        self.assertEqual(native.state, 'done')
+        self.assertIn('ready for input', native.detail)
         self.assertTrue(native.physical)
 
     def test_retry_threshold_cooldown_and_recovery(self):
