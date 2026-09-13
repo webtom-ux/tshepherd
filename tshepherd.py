@@ -25,6 +25,8 @@ from i18n import set_language, tr
 SCHEMA = "fm-fleet-snapshot.v1"
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
+ACTIVE_OUTCOMES = {"working", "parked", "blocked", "paused"}
+TERMINAL_OUTCOMES = {"done", "failed"}
 SHELLS = {"sh", "bash", "zsh", "fish", "dash", "login"}
 PRIMARY = ("firstmate-primary",)  # Tuple namespace cannot collide with worker IDs.
 MODEL_NAMES = ("Astra", "Terra", "Sol", "Luna", "Grok", "Claude")
@@ -99,11 +101,16 @@ def process_start(value):
     return started if started <= time.time() + 2 else 0
 
 
-def compact_duration(started, now):
-    """Compact wall time from a confirmed start; unknown/future values stay unknown."""
-    if not isinstance(started, (int, float)) or isinstance(started, bool) or started <= 0:
+def compact_duration(started, now, ended=0):
+    """Compact wall time between confirmed bounds, or from a live start to now."""
+    if (not isinstance(started, (int, float)) or isinstance(started, bool)
+            or not math.isfinite(started) or started <= 0):
         return "—"
-    elapsed = now - started
+    if ended:
+        if (not isinstance(ended, (int, float)) or isinstance(ended, bool)
+                or not math.isfinite(ended) or ended <= 0 or ended > now + 2):
+            return "—"
+    elapsed = (ended or now) - started
     if elapsed < -2:
         return "—"
     seconds = max(0, int(elapsed))
@@ -217,6 +224,7 @@ class Row:
     model: str
     session_started: float = 0
     task_started: float = 0
+    task_ended: float = 0
 
 
 @dataclass
@@ -239,7 +247,9 @@ def overview_rows(view, now, ttl):
     if view.error or not 0 <= now - primary.observed <= ttl:
         primary = replace(primary, live="unknown", reason=tr("Firstmate nicht verfügbar: Messung fehlt/veraltet"),
                           model="", effort="", session_started=0)
-    return [primary] + rows_for(view.snapshot, view.natives, now, ttl, bool(view.error))
+    workers = rows_for(view.snapshot, view.natives, now, ttl, bool(view.error))
+    view.retain_task_times(workers, now)
+    return [primary] + workers
 
 
 def rows_for(snapshot, natives, now, ttl, unavailable=False):
@@ -274,8 +284,7 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
             reason = " · ".join(detail for detail in (reason, native.detail) if detail)
         model = compact_model(native.model, native.effort) if native_valid else compact_model("", "")
         session_started = native.session_started if native_valid else 0
-        task_started = (native.task_started if native_valid and outcome in
-                        {"working", "parked", "blocked", "paused"} else 0)
+        task_started = (native.task_started if native_valid and outcome in ACTIVE_OUTCOMES else 0)
         activity = clean(current.get("detail"))
         if not activity:
             log = task.get("paths", {}).get("status_log", {})
@@ -877,6 +886,23 @@ class View:
     offset: int = 0
     selected_physical: tuple = ()
     quotas: list = field(default_factory=list)
+    task_times: dict = field(default_factory=dict)
+
+    def retain_task_times(self, rows, now):
+        """Keep the last confirmed active interval for a terminal worker row."""
+        keys = {row.key for row in rows}
+        self.task_times = {key: timing for key, timing in self.task_times.items() if key in keys}
+        for row in rows:
+            if row.outcome in ACTIVE_OUTCOMES:
+                confirmed_end = self.natives.get(row.task["id"], Native()).observed
+                if (row.task_started and isinstance(confirmed_end, (int, float))
+                        and not isinstance(confirmed_end, bool) and math.isfinite(confirmed_end)
+                        and row.task_started - 2 <= confirmed_end <= now + 2):
+                    self.task_times[row.key] = (row.task_started, confirmed_end)
+            elif row.outcome in TERMINAL_OUTCOMES:
+                timing = self.task_times.get(row.key)
+                if timing:
+                    row.task_started, row.task_ended = timing
 
     def apply(self, kind, payload):
         if kind == "snapshot":
@@ -1042,12 +1068,12 @@ def render_lines(view, rows, width, height, busy, now):
                                (column(row.model, MODEL_COLUMN_WIDTH), 7), ("  ", 0),
                                (column(tr(row.live), 7), state_color), ("  ", 0),
                                (column(row.outcome, 8), 4 if row.outcome == "done" else 7), ("  ", 0),
-                               (column(compact_duration(row.task_started, now), time_width), 7), ("  ", 0),
+                               (column(compact_duration(row.task_started, now, row.task_ended), time_width), 7), ("  ", 0),
                                (fit(activity, width - prefix_width - 1), 7)))
         else:
             body.append(styled(*lead, (row.title, state_color)))
             body.append(styled((tr("       {model} · {duration} · {live} · Aufgabe {outcome} · ",
-                                   model=row.model, duration=compact_duration(row.task_started, now),
+                                   model=row.model, duration=compact_duration(row.task_started, now, row.task_ended),
                                    live=tr(row.live), outcome=row.outcome), state_color),
                                (row.activity, 7)))
         if row.key == view.selected:
@@ -1075,7 +1101,7 @@ def render_lines(view, rows, width, height, busy, now):
         detail = warning or f"{selected.task['id']} · {selected.reason or selected.activity}"
         warning = tr("Session {session} · Aufgabe {task} · ",
                      session=compact_duration(selected.session_started, now),
-                     task=compact_duration(selected.task_started, now)) + detail
+                     task=compact_duration(selected.task_started, now, selected.task_ended)) + detail
     lines.append(styled(("  " + "─" * (width - 5), 7)))
     lines.append(styled(("  " + (warning or tr("Nur eigenes FM_HOME; Secondmate-Kinder nicht rekursiv")), 5 if view.error else 7)))
     lines.append(styled((tr("  ● working  ! waiting=blocked  ○ idle  ✓ done  ? unknown"), 7),
