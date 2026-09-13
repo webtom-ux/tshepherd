@@ -1,9 +1,10 @@
 """Bounded read-only macOS home-lock identity reader, invoked by TShepherd.
 
 Firstmate's fm-session-lock-lib.sh owns harness classification and the PID lock.
-Darwin proc_pidinfo supplies generation/ancestry; KERN_PROCARGS2 supplies only the
-selected owner's injected endpoint. Never enumerate processes or emit argv/env.
-Unsupported/restricted process visibility is unavailable, not a discovery fallback.
+Darwin proc_pidinfo supplies generation/ancestry; KERN_PROCARGS2 supplies only
+selected identity fields. A caller-supplied exact Pi process may read one
+process-generation-unique structured session file. Never enumerate processes or
+emit argv/env. Unsupported/restricted evidence remains unavailable.
 """
 import ctypes as C
 import json
@@ -14,8 +15,12 @@ import subprocess
 import sys
 import time
 
-KEYS = frozenset(("HERDR_ENV", "HERDR_SESSION", "HERDR_SOCKET_PATH",
-                  "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"))
+IDENTITY_KEYS = frozenset(("HERDR_ENV", "HERDR_SESSION", "HERDR_SOCKET_PATH",
+                           "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"))
+RUNTIME_KEYS = frozenset(("FM_TASK_ID", "PI_SESSION_FILE", "PI_SESSION_ID"))
+KEYS = IDENTITY_KEYS | RUNTIME_KEYS
+MAX_SESSION_BYTES = 16 * 1024 * 1024
+MAX_SESSION_LINE = 4 * 1024 * 1024
 
 
 class BSD(C.Structure):
@@ -73,6 +78,121 @@ class Darwin:
         if self.lib.sysctl(mib, 3, buf, C.byref(size), None, 0) != 0:
             raise ValueError("Owner-Prozessidentität nicht lesbar")
         return selected_environment(buf.raw[:size.value])
+
+
+def read_session_selection(path, session_id="", expected_cwd=""):
+    """Read one bounded Pi session file and follow only its active ancestry."""
+    path = Path(path)
+    if not path.is_absolute():
+        return {"model": "", "effort": ""}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return {"model": "", "effort": ""}
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_size > MAX_SESSION_BYTES):
+            return {"model": "", "effort": ""}
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            raw_lines = handle.readlines(MAX_SESSION_BYTES + 1)
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        if stamp(before) != stamp(after) or stamp(after) != stamp(current):
+            return {"model": "", "effort": ""}
+    finally:
+        os.close(fd)
+    if sum(map(len, raw_lines)) > MAX_SESSION_BYTES or any(len(line) > MAX_SESSION_LINE for line in raw_lines):
+        return {"model": "", "effort": ""}
+    entries, last_id, header_ok = {}, "", False
+    for number, raw in enumerate(raw_lines):
+        try:
+            entry = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {"model": "", "effort": ""}
+        if not isinstance(entry, dict):
+            return {"model": "", "effort": ""}
+        if number == 0:
+            header_ok = (entry.get("type") == "session"
+                         and isinstance(entry.get("id"), str) and entry.get("id")
+                         and (not session_id or entry.get("id") == session_id)
+                         and (not expected_cwd or entry.get("cwd") == expected_cwd))
+            continue
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id or entry_id in entries:
+            return {"model": "", "effort": ""}
+        entries[entry_id] = entry
+        last_id = entry_id
+    if not header_ok or not last_id:
+        return {"model": "", "effort": ""}
+    model = effort = ""
+    seen = set()
+    current_id = last_id
+    while current_id and current_id not in seen and len(seen) <= len(entries):
+        seen.add(current_id)
+        entry = entries.get(current_id)
+        if entry is None:
+            break
+        if not model and entry.get("type") == "model_change":
+            provider, model_id = entry.get("provider"), entry.get("modelId")
+            if isinstance(provider, str) and provider and isinstance(model_id, str) and model_id:
+                model = provider + "/" + model_id
+        if not effort and entry.get("type") == "thinking_level_change":
+            value = entry.get("thinkingLevel")
+            if isinstance(value, str) and value:
+                effort = value
+        if model and effort:
+            break
+        current_id = entry.get("parentId") if isinstance(entry.get("parentId"), str) else ""
+    return {"model": model, "effort": effort}
+
+
+def session_selection(environment, expected_cwd="", process_start=0, harness=""):
+    """Use an exact Pi session path, or one generation-unique default session."""
+    path_value = environment.get("PI_SESSION_FILE")
+    session_id = environment.get("PI_SESSION_ID")
+    if path_value and session_id:
+        return read_session_selection(path_value, session_id, expected_cwd)
+    if harness not in {"pi", "pi-signed"} or not expected_cwd or not process_start:
+        return {"model": "", "effort": ""}
+    cwd = Path(expected_cwd)
+    if not cwd.is_absolute() or cwd.resolve() != cwd:
+        return {"model": "", "effort": ""}
+    directory = Path.home() / ".pi/agent/sessions" / ("--" + expected_cwd.strip("/").replace("/", "-") + "--")
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return {"model": "", "effort": ""}
+    if len(entries) > 32:
+        return {"model": "", "effort": ""}
+    candidates = []
+    for entry in entries:
+        try:
+            info = entry.stat(follow_symlinks=False)
+            born = int(getattr(info, "st_birthtime", info.st_ctime) * 10**9)
+            if (entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=False)
+                    and info.st_uid == os.getuid() and born + 2 * 10**9 >= process_start):
+                candidates.append(Path(entry.path))
+        except OSError:
+            return {"model": "", "effort": ""}
+    if len(candidates) != 1:
+        return {"model": "", "effort": ""}
+    return read_session_selection(candidates[0], expected_cwd=expected_cwd)
+
+
+def observe_runtime(pid, expected_cwd="", harness="", os_reader=None):
+    """Read one caller-supplied process; do not enumerate or discover PIDs."""
+    reader = os_reader if os_reader is not None else Darwin()
+    before = reader.process(pid)
+    environment = reader.environment(pid)
+    runtime = session_selection(environment, expected_cwd, before["start"], harness)
+    if reader.process(pid) != before or reader.environment(pid) != environment:
+        raise ValueError("Owner/Endpunkt während Prüfung geändert")
+    return {"process": before,
+            "environment": {key: value for key, value in environment.items()
+                            if key in IDENTITY_KEYS or key == "FM_TASK_ID"},
+            "runtime": runtime}
 
 
 def read_lock(home):
@@ -135,15 +255,20 @@ def observe(home, root, shell_pid=None, os_reader=None, classifier=harness_alive
             or any(reader.process(p["pid"]) != p for p in chain)):
         raise ValueError("Owner/Endpunkt während Prüfung geändert")
     return {"home": str(Path(home).resolve()), "lock": lock,
-            "process": before, "environment": env}
+            "process": before,
+            "environment": {key: value for key, value in env.items() if key in IDENTITY_KEYS}}
 
 
 def main():
     try:
-        if len(sys.argv) not in (3, 4):
-            raise ValueError("Home und Firstmate-Code-Root erforderlich")
-        shell = int(sys.argv[3]) if len(sys.argv) == 4 else None
-        result = observe(sys.argv[1], sys.argv[2], shell)
+        if len(sys.argv) in (3, 4, 5) and sys.argv[1] == "--runtime":
+            result = observe_runtime(int(sys.argv[2]), sys.argv[3] if len(sys.argv) >= 4 else "",
+                                     sys.argv[4] if len(sys.argv) == 5 else "")
+        else:
+            if len(sys.argv) not in (3, 4):
+                raise ValueError("Home und Firstmate-Code-Root erforderlich")
+            shell = int(sys.argv[3]) if len(sys.argv) == 4 else None
+            result = observe(sys.argv[1], sys.argv[2], shell)
     except (ValueError, OSError, subprocess.TimeoutExpired) as error:
         # No raw OS buffers or subprocess output in the diagnostic surface.
         result = {"unavailable": str(error)}

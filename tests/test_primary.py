@@ -1,5 +1,6 @@
 """Fleet-independent primary ownership, selection and focus failure contracts."""
 import copy
+import json
 import os
 from pathlib import Path
 import sys
@@ -104,11 +105,68 @@ class OwnerReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'geändert'):
             self.observe()
 
+    def test_exact_pi_session_selection_follows_active_ancestry(self):
+        session = self.home / 'session.jsonl'
+        entries = [
+            {'type': 'session', 'id': 'session-1', 'cwd': '/exact/worktree'},
+            {'type': 'model_change', 'id': 'astra', 'parentId': 'session-1',
+             'provider': 'openai-codex', 'modelId': 'gpt-6-astra'},
+            {'type': 'thinking_level_change', 'id': 'effort', 'parentId': 'astra',
+             'thinkingLevel': 'medium'},
+            {'type': 'model_change', 'id': 'abandoned', 'parentId': 'session-1',
+             'provider': 'openai-codex', 'modelId': 'gpt-5.6-terra'},
+            {'type': 'message', 'id': 'active', 'parentId': 'effort'},
+        ]
+        session.write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+        env = {'PI_SESSION_FILE': str(session), 'PI_SESSION_ID': 'session-1'}
+        self.assertEqual(owner_api.session_selection(env, '/exact/worktree'),
+                         {'model': 'openai-codex/gpt-6-astra', 'effort': 'medium'})
+        self.assertEqual(owner_api.session_selection(env, '/other'), {'model': '', 'effort': ''})
+        env['PI_SESSION_ID'] = 'replacement'
+        self.assertEqual(owner_api.session_selection(env, '/exact/worktree'), {'model': '', 'effort': ''})
+
+    def test_generation_unique_default_pi_session_and_ambiguity(self):
+        Path(self.home / 'worktree').mkdir()
+        cwd = str((self.home / 'worktree').resolve())
+        directory = self.home / '.pi/agent/sessions' / ('--' + cwd.strip('/').replace('/', '-') + '--')
+        directory.mkdir(parents=True)
+        session = directory / 'one.jsonl'
+        session.write_text('\n'.join([
+            json.dumps({'type': 'session', 'id': 's1', 'cwd': cwd}),
+            json.dumps({'type': 'model_change', 'id': 'm1', 'parentId': None,
+                        'provider': 'openai-codex', 'modelId': 'gpt-5.6-terra'}),
+            json.dumps({'type': 'thinking_level_change', 'id': 'e1', 'parentId': 'm1',
+                        'thinkingLevel': 'medium'}), '']))
+        with patch.object(owner_api.Path, 'home', return_value=self.home):
+            self.assertEqual(owner_api.session_selection({}, cwd, 1, 'pi'),
+                             {'model': 'openai-codex/gpt-5.6-terra', 'effort': 'medium'})
+            self.assertEqual(owner_api.session_selection({}, cwd, 1, 'claude'),
+                             {'model': '', 'effort': ''})
+            (directory / 'second.jsonl').write_text(session.read_text())
+            self.assertEqual(owner_api.session_selection({}, cwd, 1, 'pi'),
+                             {'model': '', 'effort': ''})
+
+    def test_runtime_reader_rechecks_exact_process_and_hides_session_path(self):
+        session = self.home / 'session.jsonl'
+        session.write_text('\n'.join([
+            json.dumps({'type': 'session', 'id': 's1', 'cwd': '/worktree'}),
+            json.dumps({'type': 'model_change', 'id': 'm1', 'parentId': 's1',
+                        'provider': 'openai-codex', 'modelId': 'gpt-5.6-sol'}),
+            json.dumps({'type': 'thinking_level_change', 'id': 'e1', 'parentId': 'm1',
+                        'thinkingLevel': 'medium'}), '']))
+        self.reader.environment = lambda pid: {
+            'HERDR_ENV': '1', 'FM_TASK_ID': 'task',
+            'PI_SESSION_FILE': str(session), 'PI_SESSION_ID': 's1'}
+        result = owner_api.observe_runtime(self.pid, '/worktree', os_reader=self.reader)
+        self.assertEqual(result['runtime'], {'model': 'openai-codex/gpt-5.6-sol', 'effort': 'medium'})
+        self.assertNotIn('PI_SESSION_FILE', result['environment'])
+
     def test_selected_environment_discards_secret_and_rejects_duplicates(self):
         def buffer(env):
             return (2).to_bytes(4, sys.byteorder) + b'/bin/program\0\0program\0private-arg\0' + env
-        selected = owner_api.selected_environment(buffer(b'SECRET=not-output\0HERDR_PANE_ID=w1:p1\0HERDR_ENV=1\0\0'))
-        self.assertEqual(selected, {'HERDR_PANE_ID': 'w1:p1', 'HERDR_ENV': '1'})
+        selected = owner_api.selected_environment(buffer(
+            b'SECRET=not-output\0HERDR_PANE_ID=w1:p1\0HERDR_ENV=1\0PI_SESSION_ID=s1\0\0'))
+        self.assertEqual(selected, {'HERDR_PANE_ID': 'w1:p1', 'HERDR_ENV': '1', 'PI_SESSION_ID': 's1'})
         with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
             owner_api.selected_environment(buffer(b'HERDR_PANE_ID=w1:p1\0HERDR_PANE_ID=w2:p1\0'))
         with self.assertRaises(ValueError):
@@ -133,6 +191,8 @@ class PrimaryRunner(FakeRunner):
     def run(self, argv, timeout, env=None):
         if len(argv) > 1 and Path(argv[1]).name == 'primary_identity.py':
             self.calls.append(argv)
+            if len(argv) > 2 and argv[2] == '--runtime':
+                return {'runtime': copy.deepcopy(self.owner.get('runtime', {}))}
             if len(argv) == 5 and not self.ancestry:
                 return {'unavailable': 'not a descendant'}
             return copy.deepcopy(self.owner)
@@ -154,11 +214,15 @@ class PrimaryTests(unittest.TestCase):
         return self.source.primary(time.monotonic() + 12)
 
     def test_primary_exact_focus_without_fleet_and_no_outcome(self):
-        self.runner.model, self.runner.effort = 'Astra', 'medium'
+        self.runner.owner['runtime'] = {'model': 'openai-codex/gpt-6-astra', 'effort': 'medium'}
         first = self.measured()
         self.assertTrue(first.physical, first.reason)
         self.assertEqual(first.live, 'idle')
         self.assertEqual(app.compact_model(first.model, first.effort), 'Astra·M')
+        self.runner.owner['runtime'] = {'model': 'openai-codex/gpt-5.6-terra', 'effort': 'medium'}
+        switched = self.measured()
+        self.assertEqual(switched.key, first.key)  # runtime selection is not target identity
+        self.assertEqual(app.compact_model(switched.model, switched.effort), 'Terra·M')
         self.assertFalse(hasattr(first, 'task'))
         self.assertFalse(hasattr(first, 'outcome'))
         self.assertIn('Firstmate', self.source.focus(first.key))
@@ -166,9 +230,15 @@ class PrimaryTests(unittest.TestCase):
         self.assertEqual(mutations, [['agent', 'focus', 'w1:p1'], ['tab', 'focus', 'w1:t1']])
         self.runner.native = 'done'
         done = self.measured()
-        self.assertEqual(done.live, 'unknown')
+        self.assertEqual(done.live, 'done')
+        self.assertIn('ready for input', done.reason)
         self.assertTrue(done.physical)
         self.assertIn('confirmed', self.source.focus(done.key))
+
+    def test_primary_without_unique_runtime_session_stays_unknown_model(self):
+        first = self.measured()
+        self.assertTrue(first.physical)
+        self.assertEqual((first.model, first.effort), ('', ''))
 
     def test_missing_ambiguous_foreign_stale_or_restricted_never_focus(self):
         original = copy.deepcopy(self.runner.owner)

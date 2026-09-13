@@ -25,7 +25,7 @@ class MappingTests(unittest.TestCase):
 
     def test_separate_completion_live_idle_and_waiting(self):
         rows = self.rows()
-        self.assertEqual(app.counters(rows), dict(working=1, waiting=1, idle=2, completed=1, unknown=1))
+        self.assertEqual(app.counters(rows), dict(working=1, waiting=1, idle=2, completed=1, unknown=1, done=0))
         completed = next(r for r in rows if r.outcome == 'done')
         self.assertEqual(completed.live, 'idle')
         waiting = next(r for r in rows if r.live == 'waiting')
@@ -33,7 +33,7 @@ class MappingTests(unittest.TestCase):
 
     def test_stale_and_error_invalidate_previous_success(self):
         for rows in [self.rows(now=time.time() + 46), self.rows(unavailable=True)]:
-            self.assertEqual(app.counters(rows), dict(working=0, waiting=0, idle=0, completed=0, unknown=5))
+            self.assertEqual(app.counters(rows), dict(working=0, waiting=0, idle=0, completed=0, unknown=5, done=0))
             self.assertTrue(all(r.outcome == 'unknown' for r in rows))
         self.assertEqual(app.counters(self.rows())['idle'], 2)
 
@@ -121,13 +121,14 @@ class FakeRunner:
         self.calls = []
         self.bad = ''
         self.native = 'idle'
-        self.model = ''
-        self.effort = ''
+        self.runtime = None
         self.pane = 'w1:p1'
 
     def run(self, argv, timeout, env=None):
         self.calls.append(argv)
         if Path(argv[1]).name == 'primary_identity.py':
+            if len(argv) > 2 and argv[2] == '--runtime' and self.runtime is not None:
+                return copy.deepcopy(self.runtime)
             return {'unavailable': 'worker-only fixture has no primary owner'}
         command = tuple(argv[1:-2])
         if command[0] == 'status':
@@ -145,11 +146,14 @@ class FakeRunner:
                 raise RuntimeError('pane_not_found')
             return {'result': {'type': 'pane_info', 'pane': pane}}
         if command[:2] == ('agent', 'get'):
+            # Real Herdr 0.9 agent_info has no model or effort fields.
             return {'result': {'type': 'agent_info', 'agent': dict(
                 pane, agent='wrong' if self.bad == 'provider' else 'pi', agent_status=self.native,
-                focused=True, model=self.model, effort=self.effort)}}
+                focused=True)}}
         if command[:2] == ('pane', 'process-info'):
-            return {'result': {'type': 'pane_process_info', 'process_info': {'pane_id': self.pane, 'foreground_processes': [{'name': 'zsh' if self.bad == 'shell' else 'node'}]}}}
+            return {'result': {'type': 'pane_process_info', 'process_info': {
+                'pane_id': self.pane, 'foreground_processes': [{
+                    'name': 'zsh' if self.bad == 'shell' else 'node', 'pid': 321, 'cwd': str(Path.cwd())}]}}}
         if command[:2] == ('agent', 'focus'):
             return {'result': {'type': 'agent_info', 'agent': dict(pane, agent='pi', focused=True)}}
         if command[:2] == ('tab', 'focus'):
@@ -169,21 +173,28 @@ class SourceTests(unittest.TestCase):
         self.source.snapshot = lambda: copy.deepcopy(self.snapshot)
 
     def test_native_mapping_and_unknown_failures(self):
-        for raw, expected in [('working', 'working'), ('blocked', 'waiting'), ('idle', 'idle'), ('done', 'unknown'), ('new', 'unknown')]:
+        for raw, expected in [('working', 'working'), ('blocked', 'waiting'), ('idle', 'idle'), ('done', 'done'), ('new', 'unknown')]:
             self.runner.native = raw
             self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).state, expected)
         for bad in ['pane', 'provider', 'missing', 'shell']:
             self.runner.bad = bad
             self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).state, 'unknown')
 
-    def test_probe_collects_actual_native_model_and_effort_only(self):
-        self.runner.model, self.runner.effort = 'openai/gpt-sol-5.6', 'medium'
+    def test_probe_collects_exact_session_model_and_effort_only(self):
+        self.runner.runtime = {
+            'environment': {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
+                            'HERDR_SESSION': 'named', 'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
+                            'HERDR_PANE_ID': 'w1:p1', 'HERDR_WORKSPACE_ID': 'w1', 'HERDR_TAB_ID': 'w1:t1'},
+            'runtime': {'model': 'openai/gpt-sol-5.6', 'effort': 'medium'}}
         native = self.source.probe(self.task, time.monotonic() + 10)
         self.assertEqual((native.model, native.effort), ('openai/gpt-sol-5.6', 'medium'))
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model,
                          'Sol·M')
+        self.runner.runtime['environment']['FM_TASK_ID'] = 'replacement'
+        self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
         self.task.update(model='Astra', effort='high')  # desired task config is not runtime evidence
-        native.model = native.effort = ''
+        self.runner.runtime = None
+        native = self.source.probe(self.task, time.monotonic() + 10)
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model,
                          '?·?')
 
@@ -191,11 +202,14 @@ class SourceTests(unittest.TestCase):
         self.runner.native = 'done'
         measured = self.source.probe(self.task, time.monotonic() + 10)
         row = app.rows_for(self.snapshot, {self.task['id']: measured}, time.time(), 45)[0]
-        self.assertEqual(row.live, 'unknown')
+        self.assertEqual(row.live, 'done')
         self.assertEqual(row.outcome, 'working')
+        self.assertEqual(app.counters([row])['done'], 1)
         self.assertEqual(app.counters([row])['completed'], 0)
+        self.runner.calls.clear()
         self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'w1:t1', '--session', 'named'], self.runner.calls)
+        self.assertFalse(any('--runtime' in call for call in self.runner.calls))
         for bad in ['pane', 'provider', 'missing', 'shell']:
             with self.subTest(bad=bad):
                 self.runner.bad = bad
@@ -210,7 +224,8 @@ class SourceTests(unittest.TestCase):
         measured = self.source.probe(self.task, time.monotonic() + 10)
         self.assertEqual(measured.state, 'idle')
         self.assertEqual(measured.physical[0], 'wA')
-        self.assertEqual(self.runner.calls[-1][-2:], ['--session', 'default'])
+        self.assertEqual([call for call in self.runner.calls if call[0] == 'herdr'][-1][-2:],
+                         ['--session', 'default'])
         self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'wA:t1', '--session', 'default'], self.runner.calls)
         measured.observed -= 50
@@ -239,7 +254,8 @@ class SourceTests(unittest.TestCase):
     def test_safe_focus_exact_identity_only(self):
         self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertIn(['herdr', 'tab', 'focus', 'w1:t1', '--session', 'named'], self.runner.calls)
-        self.assertTrue(all(c[-2:] == ['--session', 'named'] for c in self.runner.calls))
+        self.assertTrue(all(c[-2:] == ['--session', 'named']
+                            for c in self.runner.calls if c[0] == 'herdr'))
         self.runner.calls.clear()
         old = app.identity(self.task)
         self.task['spawn_gen'] = 'new'
@@ -422,7 +438,7 @@ class OwnershipTests(unittest.TestCase):
     def test_hot_path_uses_only_current_target_proof(self):
         self.assertIn('confirmed', self.source.focus(app.identity(self.task)))
         self.assertTrue(any(c[1:3] == ['tab', 'focus'] for c in self.runner.calls))
-        self.assertTrue(all(c[-1] == 'named' for c in self.runner.calls))
+        self.assertTrue(all(c[-1] == 'named' for c in self.runner.calls if c[0] == 'herdr'))
 
     def test_last_metadata_value_matches_firstmate_not_first_value(self):
         with self.meta.open('a') as f:
