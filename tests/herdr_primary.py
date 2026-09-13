@@ -135,7 +135,7 @@ for case in ('missing', 'malformed', 'stale-generation', 'foreign-owner'):
     else:
         raise AssertionError('Accepted unavailable primary: ' + case)
     # Wait for the actual TUI's unavailable first row, then enter through client.
-    until(lambda: 'nicht verfügbar' in call('pane', 'read', dashboard['pane_id'], '--lines', '200'))
+    until(lambda: 'unavailable' in call('pane', 'read', dashboard['pane_id'], '--lines', '200'))
     send(b'k\r')
     time.sleep(.7)
     assert b'PRIMARY_CLIENT_VISIBLE_86b2' not in output()[start:], case

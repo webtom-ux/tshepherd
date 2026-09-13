@@ -85,7 +85,7 @@ def verify(config, base):
                 lines = frame['lines']
                 assert (frame['cols'], frame['rows']) == (28, 16), frame
                 assert any('>○ ONE CHILD ONLY' in line for line in lines), frame
-                assert any('idle · Aufgabe' in line for line in lines), frame
+                assert any('idle · task' in line for line in lines), frame
                 assert any('◆ Firstmate' in line for line in lines), frame
                 assert any('1  Worker' in line for line in lines), frame
                 assert any('1  idle' in line for line in lines), frame

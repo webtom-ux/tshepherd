@@ -64,7 +64,7 @@ class ReloadTests(unittest.TestCase):
             data.write_text(json.dumps(snapshot))
             invalid = source.collect()[1][task['id']]
             self.assertEqual(invalid.state, 'unknown')
-            self.assertIn('ungültige Endpunktidentität', invalid.detail)
+            self.assertIn('invalid endpoint identity', invalid.detail)
             self.assertFalse(any('focus' in call or 'list' in call for call in native.calls))
 
     def test_same_logical_identity_physical_replacement_requires_navigation(self):
@@ -91,12 +91,12 @@ class ReloadTests(unittest.TestCase):
             native = source.probe(task, time.monotonic() + 10)
             primary = source.primary(time.monotonic() + 10)
         for reason in (native.detail, primary.reason):
-            self.assertIn('Zugriff prüfen', reason)
+            self.assertIn('check', reason)
             self.assertNotIn('secret', reason)
         runner.native = 'done'
         native = source.probe(task, time.monotonic() + 10)
         self.assertEqual(native.state, 'unknown')
-        self.assertIn('beendet', native.detail)
+        self.assertIn('ended', native.detail)
         self.assertTrue(native.physical)
 
     def test_retry_threshold_cooldown_and_recovery(self):
@@ -152,7 +152,7 @@ class ReloadTests(unittest.TestCase):
                 lines = app.render_lines(view, [primary], width, 30, False, time.time())
                 spans = next(spans for text, spans in lines if '◆ Firstmate' in text)
                 self.assertIn((0, '    > ◆ Firstmate', app.STATES.index(state) + 1), spans)
-                self.assertIn('R neu', lines[-1][0])
+                self.assertIn('R refresh', lines[-1][0])
         class Screen:
             keys = iter([ord('R'), ord('q')])
             def getch(self): return next(self.keys)

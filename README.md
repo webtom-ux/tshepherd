@@ -61,6 +61,16 @@ TShepherd
 
 For Bash, put the same function in `~/.bashrc` and reload it with `source ~/.bashrc`.
 
+The interface defaults to English. The function forwards options to TShepherd:
+
+```sh
+TShepherd --lang de  # German
+TShepherd --lang en  # English (default)
+```
+
+Only interface labels are translated; project names, task text and source status
+values are kept as reported.
+
 Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh,
 and **q** or **Ctrl+C** to quit. Live activity and task completion are separate;
 `unknown` means the current live state could not be confirmed.

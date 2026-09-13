@@ -166,7 +166,7 @@ class PrimaryTests(unittest.TestCase):
         done = self.measured()
         self.assertEqual(done.live, 'unknown')
         self.assertTrue(done.physical)
-        self.assertIn('bestätigt', self.source.focus(done.key))
+        self.assertIn('confirmed', self.source.focus(done.key))
 
     def test_missing_ambiguous_foreign_stale_or_restricted_never_focus(self):
         original = copy.deepcopy(self.runner.owner)
@@ -202,13 +202,13 @@ class PrimaryTests(unittest.TestCase):
         self.runner.run = replace_physical
         row = self.measured()
         self.assertFalse(row.physical)
-        self.assertIn('Physischer', row.reason)
+        self.assertIn('physical', row.reason)
         self.assertFalse(any('focus' in c for c in self.runner.calls))
 
     def test_second_mutation_rechecks_owner_generation(self):
         selected = self.measured().key
         self.runner.after_focus = lambda: self.runner.owner['process'].update(start=11)
-        with self.assertRaisesRegex(ValueError, 'Tab-Wechsel nicht bestätigt'):
+        with self.assertRaisesRegex(ValueError, 'tab switch not confirmed'):
             self.source.focus(selected)
         self.assertFalse(any(c[1:3] == ['tab', 'focus'] for c in self.runner.calls))
 
@@ -217,14 +217,14 @@ class PrimaryTests(unittest.TestCase):
         self.source.config.lab_helper = '/helper'
         row = self.measured()
         self.assertFalse(row.physical)
-        self.assertIn('fremde Session', row.reason)
+        self.assertIn('foreign session', row.reason)
         self.assertEqual(len(self.runner.calls), 1)
 
     def test_default_absent_session_requires_owner_canonical_socket(self):
         self.runner.owner['environment'].pop('HERDR_SESSION')
         first = self.measured()
         self.assertFalse(first.physical)
-        self.assertIn('Session', first.reason)
+        self.assertIn('session', first.reason)
         socket = str(Path.home()/'.config/herdr/herdr.sock')
         self.runner.owner['environment']['HERDR_SOCKET_PATH'] = socket
         original = self.runner.run
@@ -267,7 +267,7 @@ class PrimaryTests(unittest.TestCase):
                     self.assertGreater(titles[0], primary_line)
                     self.assertEqual(lines[titles[0]][:5], f'{index:>3} >')
                     self.assertEqual(lines[titles[0] + 1], app.fit(
-                        f'       {row.live} · Aufgabe {row.outcome} · {row.activity}', 27))
+                        f'       {row.live} · task {row.outcome} · {row.activity}', 27))
                     for value, label in zip(('5', '1', '1', '2', '1', '1'), ('Worker',) + app.STATES):
                         self.assertIn(f'{value:>3}  {label}', '\n'.join(lines))
                     if previous is not None:
@@ -299,11 +299,11 @@ class PrimaryTests(unittest.TestCase):
         missing = app.overview_rows(view, time.time(), 45)
         self.assertEqual(view.selection(missing), -1)  # no silent replacement
         frame = '\n'.join(t for t, _ in app.render_lines(view, missing, 120, 40, False, time.time()))
-        self.assertIn('nicht verfügbar', frame)
+        self.assertIn('unavailable', frame)
         view.natives[app.PRIMARY] = primary
         stale = app.overview_rows(view, time.time() + 60, 45)
         self.assertEqual(stale[0].live, 'unknown')
-        self.assertIn('veraltet', stale[0].reason)
+        self.assertIn('stale', stale[0].reason)
 
 
 if __name__ == '__main__':
