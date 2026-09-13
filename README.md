@@ -80,8 +80,18 @@ most six characters derived from their model-ID component; no manual mapping
 is needed. `?` marks an empty or unconfirmed model, or missing or unrecognized
 thinking effort. Pi sessions are read only when one
 session file is generation-unique for the exact verified process and worktree;
-ambiguous sessions and other harnesses remain unknown. Native `done` means ready
-for input with an unseen response and stays distinct from `idle`. The unseen-response
-detail appears in wide worker rows and in the footer when that worker is selected,
-subject to the available terminal width. Live activity and task completion are separate; `unknown`
-means the current live state could not be confirmed.
+ambiguous sessions and other harnesses remain unknown. The wide table has one
+**Time/Task** column for the current task; narrow rows show that compact duration
+in their detail line. Selecting a worker shows both **Session** and **Task** time
+in the footer, while selecting Firstmate shows only its session time. Durations
+round down to whole `s`/`m`/`h`/`d` and show `—` when evidence is missing or stale.
+Task time is elapsed wall time, including waiting or paused time, rather than
+active work time. Completed, failed, or unknown task status shows `—` for task
+time. Session time can continue independently of task completion. The
+[design document](docs/design.md#umsetzung) defines the start and end evidence
+requirements.
+Native `done` means ready for input with an unseen response and stays distinct
+from `idle`. The unseen-response detail appears in wide worker rows and in the
+footer when that worker is selected, subject to the available terminal width.
+Live activity and task completion are separate; `unknown` means the current live
+state could not be confirmed.
