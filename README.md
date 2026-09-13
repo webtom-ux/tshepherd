@@ -1,6 +1,7 @@
 # TShepherd
 
-A local terminal dashboard for your Firstmate workers, running inside a Herdr tab.
+A local terminal dashboard for [Firstmate](https://github.com/kunchenguid/firstmate),
+running inside a Herdr tab. TShepherd requires an existing Firstmate installation.
 See workers grouped by project, their live activity, task status, and latest update.
 Select a worker or Firstmate itself and press **Enter** to switch to its tab.
 TShepherd does not create or manage tasks.
@@ -13,7 +14,7 @@ TShepherd does not create or manage tasks.
 
 - **macOS** for the full experience, including switching to Firstmate itself.
 - **Python 3.9+ with curses** and **Git**. No additional Python packages needed.
-- An existing **Firstmate** setup with its fleet snapshot command
+- An existing [Firstmate](https://github.com/kunchenguid/firstmate) installation with its fleet snapshot command
   (`fm-fleet-snapshot.v1`) and dependencies, including **Bash** and **jq**.
 - A running **Herdr** session with a matching `herdr` CLI on your `PATH`.
   Verified with Herdr **0.9.0 / protocol 22**.
