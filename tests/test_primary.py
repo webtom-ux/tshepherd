@@ -353,7 +353,7 @@ class PrimaryTests(unittest.TestCase):
                     self.assertGreater(titles[0], primary_line)
                     self.assertEqual(lines[titles[0]][:5], f'{index:>3} >')
                     self.assertEqual(lines[titles[0] + 1], app.fit(
-                        f'       {row.model} · {row.live} · task {row.outcome} · {row.activity}', 27))
+                        f'       {row.model} · — · {row.live} · task {row.outcome} · {row.activity}', 27))
                     for value, label in zip(('5', '1', '1', '2', '1', '1'), ('Worker',) + app.STATES):
                         self.assertIn(f'{value:>3}  {label}', '\n'.join(lines))
                     if previous is not None:

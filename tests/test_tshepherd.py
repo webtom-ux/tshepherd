@@ -31,6 +31,51 @@ class MappingTests(unittest.TestCase):
         waiting = next(r for r in rows if r.live == 'waiting')
         self.assertEqual(waiting.outcome, 'parked')
 
+    def test_task_duration_requires_confirmed_nonterminal_status(self):
+        task = self.snapshot['tasks'][0]
+        self.snapshot['tasks'] = [task]
+        native = self.natives[task['id']]
+        started = time.time() - 125
+        native.session_started = native.task_started = started
+        cases = [('done', None, 'fresh', False),
+                 ('failed', None, 'fresh', False),
+                 ('working', 'done', 'fresh', False),
+                 ('unknown', None, 'fresh', False),
+                 ('working', None, 'cached', False),
+                 ('working', None, 'fresh', True),
+                 ('parked', None, 'fresh', True),
+                 ('blocked', None, 'fresh', True),
+                 ('paused', None, 'fresh', True)]
+        for elapsed in (125, 3725):
+            now = started + elapsed
+            observed = app.datetime.fromtimestamp(now).astimezone().isoformat()
+            self.snapshot['generated'] = observed
+            native.observed = now
+            for state, backlog, freshness, running in cases:
+                for live in ('working', 'idle', 'done'):
+                    with self.subTest(elapsed=elapsed, state=state, backlog=backlog,
+                                      freshness=freshness, live=live):
+                        native.state = live
+                        task['backlog']['state'] = backlog
+                        task['current_state'].update(state=state, freshness=freshness,
+                                                     observed_at=observed)
+                        rows = self.rows(now=now)
+                        row = rows[0]
+                        duration = app.compact_duration(started, now)
+                        expected = duration if running else '—'
+                        self.assertEqual(app.compact_duration(row.task_started, now), expected)
+                        self.assertEqual(app.compact_duration(row.session_started, now), duration)
+                        view = app.View(snapshot=self.snapshot, natives=self.natives,
+                                        last_success=now, selected=row.key)
+                        for width in (77, 160):
+                            frame = app.render_lines(view, rows, width, 40, False, now)
+                            text = '\n'.join(line for line, _ in frame)
+                            self.assertIn(f'Session {duration} · Task {expected}', text)
+                            body = text.split('Session ')[0]
+                            self.assertIn(expected, body)
+                            if not running:
+                                self.assertNotIn(duration, body)
+
     def test_stale_and_error_invalidate_previous_success(self):
         for rows in [self.rows(now=time.time() + 46), self.rows(unavailable=True)]:
             self.assertEqual(app.counters(rows), dict(working=0, waiting=0, idle=0, completed=0, unknown=5, done=0))
@@ -180,16 +225,21 @@ class SourceTests(unittest.TestCase):
             self.runner.bad = bad
             self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).state, 'unknown')
 
-    def test_probe_collects_exact_session_model_and_effort_only(self):
+    def test_probe_collects_only_exact_process_runtime_metadata(self):
+        started = time.time_ns() - 125 * 10**9
         self.runner.runtime = {
+            'process': {'pid': 321, 'start': started},
             'environment': {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
                             'HERDR_SESSION': 'named', 'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
                             'HERDR_PANE_ID': 'w1:p1', 'HERDR_WORKSPACE_ID': 'w1', 'HERDR_TAB_ID': 'w1:t1'},
             'runtime': {'model': 'openai/gpt-sol-5.6', 'effort': 'medium'}}
         native = self.source.probe(self.task, time.monotonic() + 10)
         self.assertEqual((native.model, native.effort), ('openai/gpt-sol-5.6', 'medium'))
-        self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model,
-                         'Sol·M')
+        self.assertAlmostEqual(native.session_started, started / 10**9, places=3)
+        self.assertEqual(native.task_started, native.session_started)
+        row = app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0]
+        self.assertEqual(row.model, 'Sol·M')
+        self.assertEqual(app.compact_duration(row.task_started, time.time()), '2m')
         self.runner.runtime['environment']['FM_TASK_ID'] = 'replacement'
         self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
         self.task.update(model='Astra', effort='high')  # desired task config is not runtime evidence
@@ -657,6 +707,15 @@ class PollingTests(unittest.TestCase):
 
 
 class RenderingTests(unittest.TestCase):
+    def test_compact_duration_units_and_fail_closed_values(self):
+        now = 1_000_000
+        self.assertEqual(app.compact_duration(now - 42, now), '42s')
+        self.assertEqual(app.compact_duration(now - 7 * 60, now), '7m')
+        self.assertEqual(app.compact_duration(now - 3 * 3600, now), '3h')
+        self.assertEqual(app.compact_duration(now - 2 * 86400, now), '2d')
+        for value in (0, None, True, now + 3):
+            self.assertEqual(app.compact_duration(value, now), '—')
+
     def test_compact_model_fixed_generic_unknown_and_effort_levels(self):
         # Existing fixed names retain priority when several names are present.
         self.assertEqual(app.compact_model('claude-astra-5', 'medium'), 'Astra·M')
@@ -679,10 +738,14 @@ class RenderingTests(unittest.TestCase):
         snapshot = sample_snapshot(str(Path.cwd()))
         snapshot['tasks'][0]['backlog']['title'] = '中 Kürzer'
         natives = {t['id']: app.Native(t['demo_live'], 'native', time.time(), app.identity(t)) for t in snapshot['tasks']}
-        rows = app.rows_for(snapshot, natives, time.time(), 45)
-        view = app.View(snapshot=snapshot, natives=natives, last_success=time.time())
+        now = time.time()
+        natives['demo-0'].session_started = now - 7200
+        natives['demo-0'].task_started = now - 125
+        rows = app.rows_for(snapshot, natives, now, 45)
+        target = next(row for row in rows if row.task['id'] == 'demo-0')
+        view = app.View(snapshot=snapshot, natives=natives, last_success=now, selected=target.key)
         view.selection(rows)
-        frame = app.render_lines(view, rows, 120, 40, False, time.time())
+        frame = app.render_lines(view, rows, 120, 40, False, now)
         badges = [(y, x, text, role) for y, (_, spans) in enumerate(frame)
                   for x, text, role in spans if 11 <= role <= 16]
         self.assertEqual([role for _, _, _, role in badges], list(range(11, 17)))
@@ -694,6 +757,12 @@ class RenderingTests(unittest.TestCase):
         model_columns = [next(x for x, text, role in spans if text.strip() == '?·?') for _, spans in worker_lines]
         self.assertEqual(len(set(provider_columns)), 1)
         self.assertEqual(len(set(model_columns)), 1)
+        text = '\n'.join(line for line, _ in frame)
+        self.assertIn('Time/Task', text)
+        target_line = next(line for line, _ in worker_lines if target.title in line)
+        self.assertIn('2m', target_line)
+        self.assertIn('Session 2h · Task 2m', text)
+        self.assertNotIn('Session', target_line)
         self.assertEqual(app.fit('a   b', 5), 'a   b')  # layout spaces must survive clipping
         self.assertEqual(app.cells(app.column('中', 6)), 6)
 
