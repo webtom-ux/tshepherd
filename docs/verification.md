@@ -312,6 +312,7 @@ Kein Fokus wird ausgelöst, keine Flotte oder Lifecycle-Funktion angesprochen.
 Die zwei gezielten bestehenden Tests
 `SourceTests.test_probe_collects_exact_session_model_and_effort_only` und
 `PrimaryTests.test_primary_without_unique_runtime_session_stays_unknown_model`
-bestanden ebenfalls. Produktionscode wurde nicht geändert. Zellaufnahmen und
+bestanden ebenfalls. Für diesen PTY-Nachweis wurden die Produktionsguards nicht
+geändert. Zellaufnahmen und
 ANSI-Mitschnitte entstehen temporär innerhalb des Worktrees und werden nach dem
 Test entfernt; es wurde keine vollständige Suite ausgeführt.
