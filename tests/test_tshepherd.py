@@ -76,6 +76,61 @@ class MappingTests(unittest.TestCase):
                             if not running:
                                 self.assertNotIn(duration, body)
 
+    def test_terminal_task_duration_freezes_until_same_row_has_new_work(self):
+        task = self.snapshot['tasks'][0]
+        self.snapshot['tasks'] = [task]
+        native = self.natives[task['id']]
+        started = time.time() - 125
+        native.session_started = native.task_started = started
+        view = app.View(snapshot=self.snapshot, natives=self.natives, selected=app.identity(task))
+
+        def observe(now, outcome):
+            observed = app.datetime.fromtimestamp(now).astimezone().isoformat()
+            self.snapshot['generated'] = observed
+            task['current_state'].update(state=outcome, freshness='fresh', observed_at=observed)
+            task['backlog']['state'] = None
+            native.observed = now
+            return next(row for row in app.overview_rows(view, now, 45)
+                        if not isinstance(row, app.PrimaryRow))
+
+        active = observe(started + 125, 'working')
+        self.assertEqual(app.compact_duration(active.task_started, started + 125,
+                                              active.task_ended), '2m')
+        for terminal in ('done', 'failed'):
+            with self.subTest(terminal=terminal):
+                row = observe(started + 130, terminal)
+                self.assertEqual(app.compact_duration(row.task_started, started + 130,
+                                                      row.task_ended), '2m')
+                later = observe(started + 3730, terminal)
+                self.assertEqual(app.compact_duration(later.task_started, started + 3730,
+                                                      later.task_ended), '2m')
+                self.assertEqual(app.compact_duration(later.session_started,
+                                                      started + 3730), '1h')
+                frame = app.render_lines(view, [later], 160, 40, False, started + 3730)
+                text = '\n'.join(line for line, _ in frame)
+                self.assertIn('Session 1h · Task 2m', text)
+
+        new_start = started + 3720
+        native.task_started = new_start
+        current = observe(started + 3730, 'working')
+        self.assertEqual(current.task_ended, 0)
+        self.assertEqual(app.compact_duration(current.task_started, started + 3730), '10s')
+
+    def test_terminal_task_duration_without_retained_bounds_is_unknown(self):
+        task = self.snapshot['tasks'][0]
+        self.snapshot['tasks'] = [task]
+        now = time.time()
+        observed = app.datetime.fromtimestamp(now).astimezone().isoformat()
+        self.snapshot['generated'] = observed
+        task['current_state'].update(state='done', freshness='fresh', observed_at=observed)
+        native = self.natives[task['id']]
+        native.observed = now
+        native.task_started = now - 60
+        view = app.View(snapshot=self.snapshot, natives=self.natives)
+        row = next(row for row in app.overview_rows(view, now, 45)
+                   if not isinstance(row, app.PrimaryRow))
+        self.assertEqual(app.compact_duration(row.task_started, now, row.task_ended), '—')
+
     def test_stale_and_error_invalidate_previous_success(self):
         for rows in [self.rows(now=time.time() + 46), self.rows(unavailable=True)]:
             self.assertEqual(app.counters(rows), dict(working=0, waiting=0, idle=0, completed=0, unknown=5, done=0))
@@ -806,8 +861,11 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(app.compact_duration(now - 7 * 60, now), '7m')
         self.assertEqual(app.compact_duration(now - 3 * 3600, now), '3h')
         self.assertEqual(app.compact_duration(now - 2 * 86400, now), '2d')
-        for value in (0, None, True, now + 3):
+        for value in (0, None, True, float('nan'), float('inf'), now + 3):
             self.assertEqual(app.compact_duration(value, now), '—')
+        self.assertEqual(app.compact_duration(now - 60, now, now - 30), '30s')
+        for ended in (True, float('nan'), float('inf'), now + 3, now - 63):
+            self.assertEqual(app.compact_duration(now - 60, now, ended), '—')
 
     def test_compact_model_fixed_generic_unknown_and_effort_levels(self):
         # Existing fixed names retain priority when several names are present.

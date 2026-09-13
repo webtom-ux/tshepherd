@@ -117,12 +117,17 @@ Prozess über seine selektierte Umgebung exakt an Task-ID, Spawn-Bindung und Pan
 gebunden sein; beim primären Chat gilt die verifizierte Lock-Owner-Generation.
 Snapshot-Beobachtungszeiten und unbestätigte Metadaten werden nicht als Startzeit
 gedeutet. `rows_for` gibt den Aufgabenstart nur bei frischem, bestätigtem Outcome
-`working`, `parked`, `blocked` oder `paused` frei. Die unterstützte Evidenz liefert
-keinen autoritativen Endzeitpunkt; es wird weder ein Abschlusszeitpunkt aus
-nativer Aktivität abgeleitet noch ein solcher Zeitpunkt zwischengespeichert.
-Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine frische,
-identitätsgleiche native Messung, bei Workern zusätzlich einen frischen Snapshot.
-Die Zeitwerte beeinflussen die Sortierung nicht.
+`working`, `parked`, `blocked` oder `paused` frei. `View` merkt sich für diese
+identitätsgleiche Worker-Zeile ausschließlich im Speicher das zuletzt durch eine
+frische native Messung bestätigte Intervall. Wechselt das Outcome zu `done` oder
+`failed`, bleibt dieses Intervall eingefroren sichtbar; der Abschluss wird nicht
+aus nativer Aktivität abgeleitet und die Dauer läuft nicht mit der Session weiter. Eine neu bestätigte
+laufende Aufgabe ersetzt das Intervall. Ohne zuvor bestätigten Start und solchen
+Endbeleg, nach einem Neustart sowie bei unbekanntem Outcome bleibt die Aufgabenzeit
+`—`. Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine
+frische, identitätsgleiche native Messung, bei Workern zusätzlich einen frischen
+Snapshot. Die Zeitwerte beeinflussen die Sortierung nicht und werden nicht
+dauerhaft gespeichert.
 Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
 beim Kürzen erhalten.
 Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht

@@ -102,10 +102,13 @@ in their detail line. Selecting a worker shows both **Session** and **Task** tim
 in the footer, while selecting Firstmate shows only its session time. Durations
 round down to whole `s`/`m`/`h`/`d` and show `—` when evidence is missing or stale.
 Task time is elapsed wall time, including waiting or paused time, rather than
-active work time. Completed, failed, or unknown task status shows `—` for task
-time. Session time can continue independently of task completion. The
-[design document](docs/design.md#umsetzung) defines the start and end evidence
-requirements.
+active work time. When a task becomes completed or failed, its last confirmed
+duration freezes in the row until that worker reports a new task in progress.
+If TShepherd did not observe a trustworthy active interval first, or the current
+status is unknown, task time remains `—`. This retention is in memory only;
+restarting TShepherd cannot reconstruct a finished task's end. Session time can
+continue independently of task completion. The [design document](docs/design.md#umsetzung)
+defines the start and end evidence requirements.
 Native `done` means ready for input with an unseen response and stays distinct
 from `idle`. The unseen-response detail appears in wide worker rows and in the
 footer when that worker is selected, subject to the available terminal width.
