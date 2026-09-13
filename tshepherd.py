@@ -264,7 +264,8 @@ def rows_for(snapshot, natives, now, ttl, unavailable=False):
             reason = " · ".join(detail for detail in (reason, native.detail) if detail)
         model = compact_model(native.model, native.effort) if native_valid else compact_model("", "")
         session_started = native.session_started if native_valid else 0
-        task_started = native.task_started if native_valid else 0
+        task_started = (native.task_started if native_valid and outcome in
+                        {"working", "parked", "blocked", "paused"} else 0)
         activity = clean(current.get("detail"))
         if not activity:
             log = task.get("paths", {}).get("status_log", {})

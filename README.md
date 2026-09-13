@@ -86,6 +86,9 @@ in their detail line. Selecting a worker shows both **Session** and **Task** tim
 in the footer, while selecting Firstmate shows only its session time. Durations
 use `s`/`m`/`h`/`d` and remain `—` unless an exact task-bound process generation
 confirms their start; snapshot update times are never treated as start times.
+Completed, failed, or unknown task status shows `—` for task time: the supported
+evidence supplies no authoritative task-end timestamp. Session time can continue
+independently of task completion.
 Native `done` means ready for input with an unseen response and stays distinct
 from `idle`. The unseen-response detail appears in wide worker rows and in the
 footer when that worker is selected, subject to the available terminal width.

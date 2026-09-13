@@ -112,7 +112,11 @@ stammen aus der erneut bestätigten Prozessgeneration: Bei Workern muss derselbe
 Prozess über seine selektierte Umgebung exakt an Task-ID, Spawn-Bindung und Pane
 gebunden sein; beim primären Chat gilt die verifizierte Lock-Owner-Generation.
 Snapshot-Beobachtungszeiten und unbestätigte Metadaten werden nicht als Startzeit
-gedeutet. Fehlende oder veraltete Evidenz ergibt `—`; die Anzeige rundet kompakt
+gedeutet. Für abgeschlossene, fehlgeschlagene oder unbekannte Aufgaben bleibt
+die Aufgabendauer `—`, da die unterstützte Evidenz keinen autoritativen
+Endzeitpunkt liefert. Die Sessiondauer läuft davon unabhängig weiter; native
+Aktivität bestimmt keinen Aufgabenabschluss. Fehlende oder veraltete Evidenz
+ergibt `—`; die Anzeige rundet kompakt
 auf ganze `s`, `m`, `h` oder `d` ab und beeinflusst die Sortierung nicht.
 Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
 beim Kürzen erhalten. Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht

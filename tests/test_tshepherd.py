@@ -31,6 +31,51 @@ class MappingTests(unittest.TestCase):
         waiting = next(r for r in rows if r.live == 'waiting')
         self.assertEqual(waiting.outcome, 'parked')
 
+    def test_task_duration_requires_confirmed_nonterminal_status(self):
+        task = self.snapshot['tasks'][0]
+        self.snapshot['tasks'] = [task]
+        native = self.natives[task['id']]
+        started = time.time() - 125
+        native.session_started = native.task_started = started
+        cases = [('done', None, 'fresh', False),
+                 ('failed', None, 'fresh', False),
+                 ('working', 'done', 'fresh', False),
+                 ('unknown', None, 'fresh', False),
+                 ('working', None, 'cached', False),
+                 ('working', None, 'fresh', True),
+                 ('parked', None, 'fresh', True),
+                 ('blocked', None, 'fresh', True),
+                 ('paused', None, 'fresh', True)]
+        for elapsed in (125, 3725):
+            now = started + elapsed
+            observed = app.datetime.fromtimestamp(now).astimezone().isoformat()
+            self.snapshot['generated'] = observed
+            native.observed = now
+            for state, backlog, freshness, running in cases:
+                for live in ('working', 'idle', 'done'):
+                    with self.subTest(elapsed=elapsed, state=state, backlog=backlog,
+                                      freshness=freshness, live=live):
+                        native.state = live
+                        task['backlog']['state'] = backlog
+                        task['current_state'].update(state=state, freshness=freshness,
+                                                     observed_at=observed)
+                        rows = self.rows(now=now)
+                        row = rows[0]
+                        duration = app.compact_duration(started, now)
+                        expected = duration if running else '—'
+                        self.assertEqual(app.compact_duration(row.task_started, now), expected)
+                        self.assertEqual(app.compact_duration(row.session_started, now), duration)
+                        view = app.View(snapshot=self.snapshot, natives=self.natives,
+                                        last_success=now, selected=row.key)
+                        for width in (77, 160):
+                            frame = app.render_lines(view, rows, width, 40, False, now)
+                            text = '\n'.join(line for line, _ in frame)
+                            self.assertIn(f'Session {duration} · Task {expected}', text)
+                            body = text.split('Session ')[0]
+                            self.assertIn(expected, body)
+                            if not running:
+                                self.assertNotIn(duration, body)
+
     def test_stale_and_error_invalidate_previous_success(self):
         for rows in [self.rows(now=time.time() + 46), self.rows(unavailable=True)]:
             self.assertEqual(app.counters(rows), dict(working=0, waiting=0, idle=0, completed=0, unknown=5, done=0))
