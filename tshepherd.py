@@ -899,10 +899,6 @@ class View:
                         and not isinstance(confirmed_end, bool) and math.isfinite(confirmed_end)
                         and row.task_started - 2 <= confirmed_end <= now + 2):
                     self.task_times[row.key] = (row.task_started, confirmed_end)
-                else:
-                    # A current task without confirmed bounds must not inherit
-                    # the preceding task's duration on a reused worker row.
-                    self.task_times.pop(row.key, None)
             elif row.outcome in TERMINAL_OUTCOMES:
                 timing = self.task_times.get(row.key)
                 if timing:

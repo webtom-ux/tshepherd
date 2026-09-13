@@ -116,6 +116,46 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(current.task_ended, 0)
         self.assertEqual(app.compact_duration(current.task_started, started + 3730), '10s')
 
+    def test_terminal_task_duration_survives_missing_native_measurements(self):
+        task = self.snapshot['tasks'][0]
+        self.snapshot['tasks'] = [task]
+        started = time.time() - 125
+
+        def observe(view, now, outcome, task_start):
+            observed = app.datetime.fromtimestamp(now).astimezone().isoformat()
+            self.snapshot['generated'] = observed
+            task['current_state'].update(state=outcome, freshness='fresh', observed_at=observed)
+            task['backlog']['state'] = None
+            self.natives[task['id']] = app.Native(
+                observed=now, binding=app.identity(task), task_started=task_start)
+            return next(row for row in app.overview_rows(view, now, 45)
+                        if not isinstance(row, app.PrimaryRow))
+
+        for terminal in ('done', 'failed'):
+            with self.subTest(terminal=terminal):
+                view = app.View(snapshot=self.snapshot, natives=self.natives)
+                observe(view, started + 125, 'working', started)
+                missing = observe(view, started + 130, 'working', 0)
+                self.assertEqual(app.compact_duration(missing.task_started, started + 130), '—')
+                finished = observe(view, started + 140, terminal, 0)
+                self.assertEqual((finished.task_started, finished.task_ended),
+                                 (started, started + 125))
+                self.assertEqual(app.compact_duration(finished.task_started, started + 140,
+                                                      finished.task_ended), '2m')
+
+                new_start = started + 145
+                observe(view, started + 150, 'working', new_start)
+                observe(view, started + 155, 'working', 0)
+                finished = observe(view, started + 160, terminal, 0)
+                self.assertEqual((finished.task_started, finished.task_ended),
+                                 (new_start, started + 150))
+
+                task['spawn_gen'] = str(task.get('spawn_gen')) + '-replacement'
+                observe(view, started + 165, 'working', 0)
+                replaced = observe(view, started + 170, terminal, 0)
+                self.assertEqual(app.compact_duration(replaced.task_started, started + 170,
+                                                      replaced.task_ended), '—')
+
     def test_terminal_task_duration_without_retained_bounds_is_unknown(self):
         task = self.snapshot['tasks'][0]
         self.snapshot['tasks'] = [task]
