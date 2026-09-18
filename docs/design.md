@@ -187,7 +187,7 @@ not a kernel-signed ownership generation; manipulation by the same local user
 or a changed system clock is not an extra security boundary. Same-PID exec
 still requires the current harness check.
 There is no new service, no shared state schema, and no fallback to a name
-search or unproven Linux process interpretation.
+search or guessed process interpretation.
 
 ## Acceptance points
 
