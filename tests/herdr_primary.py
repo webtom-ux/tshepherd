@@ -1,4 +1,4 @@
-"""Opt-in macOS primary ownership + actual client-visible Enter acceptance.
+"""Opt-in primary ownership + actual client-visible Enter acceptance.
 
 Synthetic harness argv/registration, not a model session. Every endpoint and
 mutation belongs to the named lab; the real Firstmate owner library is read-only.
@@ -17,8 +17,8 @@ import tshepherd as app
 from fixtures import sample_snapshot
 from client_lab import root, helper, session, base, guard, call, until, send, output, create
 
-if sys.platform != 'darwin':
-    raise SystemExit('Primary identity lab requires macOS; other OS stays unavailable')
+if sys.platform != 'darwin' and not sys.platform.startswith('linux'):
+    raise SystemExit('Primary identity lab requires macOS or Linux')
 code_root = Path(helper).resolve().parent.parent
 home = base / 'home'
 (home / 'state').mkdir(parents=True)
@@ -36,9 +36,9 @@ for line in sys.stdin:
 # An explicit synthetic argv0 exercises Firstmate's existing harness classifier
 # without launching a real agent, consuming credentials, or inventing metadata.
 # Apple's /usr/bin/python3 launcher rewrites argv0 on its framework exec.
-# Invoke the real framework binary for this synthetic harness-name fixture.
+# Invoke the real framework binary for this synthetic harness-name fixture when present.
 framework = Path(sys.base_prefix) / 'Resources/Python.app/Contents/MacOS/Python'
-interpreter = str(framework) if framework.is_file() else sys.executable
+interpreter = str(framework) if sys.platform == 'darwin' and framework.is_file() else sys.executable
 owner_command = 'exec -a pi ' + shlex.join([interpreter, '-u', str(program), str(home / 'state/.lock')])
 call('pane', 'run', primary['pane_id'], shlex.join(['/bin/bash', '-c', owner_command]))
 until(lambda: (home / 'state/.lock').exists())

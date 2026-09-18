@@ -211,14 +211,14 @@ Die sieben real vorhandenen Worker lassen naturgemäß mehr Freiraum als die
 
 ## Firstmate-Owner und feste erste Zeile
 
-Auf macOS mit Herdr **0.9.0 / Protokoll 22** wurde zuerst der tatsächliche
-Home-Lock-Owner ausschließlich read-only geprüft: Kernel-Startgeneration vor
-Lock-mtime, eigene injizierte Herdr-IDs und Socket, übereinstimmende native
-Pane-/Agent-Physik und direkte Abstammung von der gemeldeten Pane-Shell. Der
-reale Default-Owner lieferte **kein `HERDR_SESSION`**, aber den kanonischen
-Default-Socket. Der Kandidat kam aus dem Lock, nicht aus einer aufgezeichneten
-Pane-ID, einem Titel oder dem Dashboard-Prozess. Kein Fokus/Lifecycle am realen
-Owner, Preview oder Worker war Teil dieser Prüfung.
+On macOS with Herdr **0.9.0 / protocol 22**, and with the same reader contract now
+available on Linux, the real home-lock owner is checked read-only: kernel generation before
+lock mtime, its own injected Herdr IDs and socket, matching native pane/agent physical
+identity, and direct ancestry from the reported pane shell. The real default owner
+provided **no `HERDR_SESSION`**, but did provide the canonical default socket. The
+candidate came from the lock, not from a recorded pane ID, title, or the dashboard
+process. No focus or lifecycle action against the real owner, preview, or worker was
+part of this check.
 
 Der reproduzierbare opt-in Test ist:
 
@@ -268,12 +268,11 @@ das tatsächlich gezeichnete curses-Fenster; `narrow-client.ansi` enthält den
 PTY-Mitschnitt. Diese separate Terminalaufnahme ist kein Herdr-Client-Wechsel;
 diesen prüft das oben beschriebene Enter-Szenario.
 
-Nicht behauptet werden atomare Fokus-/Generationsgarantien, tatsächlich erzwungenes
-PID-Recycling, fremde OS-Fensteraktivierung oder Linux-Unterstützung des primären
-Readers. Die Stale-PID-Tests stellen die relevante Zeit-/Generationsbedingung
-kontrolliert her; die Restart-Prüfung verwendet dagegen einen echten benannten
-Server-Neustart. Raw-Client-Evidenz und ausgewählte Owner-Beobachtungen liegen
-im [Session-Evidenzverzeichnis](#isolierter-herdr-live-test).
+This does not claim atomic focus/generation guarantees, actually forced PID recycling,
+foreign OS-window activation, or support outside the verified macOS/Linux readers.
+The stale-PID tests create the relevant time/generation condition in a controlled way;
+the restart check uses a real named server restart. Raw client evidence and selected
+owner observations are in the [session evidence directory](#isolierter-herdr-live-test).
 
 ## Modelllabels: echte PTY-UI mit synthetischer Quelle
 

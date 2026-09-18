@@ -12,7 +12,7 @@ TShepherd does not create or manage tasks.
 
 ## Requirements
 
-- **macOS** for the full experience, including switching to Firstmate itself.
+- **macOS or Linux** for the full experience, including switching to Firstmate itself.
 - **Python 3.9+ with curses** and **Git**. No additional Python packages needed.
 - An existing [Firstmate](https://github.com/kunchenguid/firstmate) installation with its fleet snapshot command
   (`fm-fleet-snapshot.v1`) and dependencies, including **Bash** and **jq**.

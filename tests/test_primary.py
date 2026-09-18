@@ -169,11 +169,55 @@ class OwnerReaderTests(unittest.TestCase):
         self.assertEqual(selected, {'HERDR_PANE_ID': 'w1:p1', 'HERDR_ENV': '1', 'PI_SESSION_ID': 's1'})
         with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
             owner_api.selected_environment(buffer(b'HERDR_PANE_ID=w1:p1\0HERDR_PANE_ID=w2:p1\0'))
+        with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
+            owner_api.selected_environment_entries([b'HERDR_ENV=1', b'HERDR_ENV=1'])
         with self.assertRaises(ValueError):
             owner_api.selected_environment(b'bad')
         with patch.object(owner_api.sys, 'platform', 'linux'):
             with self.assertRaisesRegex(ValueError, 'macOS'):
                 owner_api.Darwin()
+
+    def test_linux_reader_supplies_process_generation_and_selected_environment(self):
+        proc = self.home / 'proc'
+        pid, ppid = 1234, 222
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / str(ppid)).mkdir(parents=True)
+        (proc / 'stat').write_text('btime 1000\n')
+        fields = ['S', str(ppid)] + ['0'] * 17 + ['250'] + ['0'] * 4
+        (proc / str(pid) / 'stat').write_text(f'{pid} (pi) ' + ' '.join(fields) + '\n')
+        (proc / str(pid) / 'status').write_text(f'State:\tS (sleeping)\nUid:\t{os.getuid()}\t0\t0\t0\n')
+        (proc / str(pid) / 'environ').write_bytes(
+            b'SECRET=hidden\0HERDR_ENV=1\0HERDR_SESSION=named\0'
+            b'HERDR_SOCKET_PATH=/tmp/herdr.sock\0HERDR_PANE_ID=wA:p1\0'
+            b'HERDR_TAB_ID=wA:t1\0HERDR_WORKSPACE_ID=wA\0FM_TASK_ID=task\0')
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            reader = owner_api.Linux(proc, clock_ticks=100, boot_time_ns=1000 * 10**9)
+        self.assertEqual(reader.process(pid), {
+            'pid': pid, 'ppid': ppid, 'uid': os.getuid(), 'start': 1002500000000})
+        self.assertEqual(reader.environment(pid), {
+            'HERDR_ENV': '1', 'HERDR_SESSION': 'named', 'HERDR_SOCKET_PATH': '/tmp/herdr.sock',
+            'HERDR_PANE_ID': 'wA:p1', 'HERDR_TAB_ID': 'wA:t1', 'HERDR_WORKSPACE_ID': 'wA',
+            'FM_TASK_ID': 'task'})
+        result = owner_api.observe_runtime(pid, '/worktree', os_reader=reader)
+        self.assertNotIn('SECRET', result['environment'])
+        self.assertEqual(result['process']['start'], 1002500000000)
+
+    def test_linux_reader_rejects_wrong_uid_zombie_and_duplicate_identity(self):
+        proc = self.home / 'proc'
+        pid = 1234
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / 'stat').write_text('btime 1000\n')
+        fields = ['S', '1'] + ['0'] * 17 + ['250']
+        (proc / str(pid) / 'stat').write_text(f'{pid} (pi) ' + ' '.join(fields) + '\n')
+        (proc / str(pid) / 'status').write_text('State:\tZ (zombie)\nUid:\t0\t0\t0\t0\n')
+        (proc / str(pid) / 'environ').write_bytes(b'HERDR_ENV=1\0HERDR_ENV=1\0')
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            reader = owner_api.Linux(proc, clock_ticks=100, boot_time_ns=1000 * 10**9)
+        with self.assertRaises(ValueError):
+            reader.process(pid)
+        (proc / str(pid) / 'status').write_text(f'State:\tS (sleeping)\nUid:\t{os.getuid()}\t0\t0\t0\n')
+        with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
+            reader.environment(pid)
 
 
 class PrimaryRunner(FakeRunner):

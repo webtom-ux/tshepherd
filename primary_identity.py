@@ -1,10 +1,11 @@
-"""Bounded read-only macOS home-lock identity reader, invoked by TShepherd.
+"""Bounded read-only home-lock identity reader, invoked by TShepherd.
 
 Firstmate's fm-session-lock-lib.sh owns harness classification and the PID lock.
-Darwin proc_pidinfo supplies generation/ancestry; KERN_PROCARGS2 supplies only
-selected identity fields. A caller-supplied exact Pi process may read one
-process-generation-unique structured session file. Never enumerate processes or
-emit argv/env. Unsupported/restricted evidence remains unavailable.
+Darwin proc_pidinfo and Linux /proc supply generation/ancestry; KERN_PROCARGS2
+or /proc/<pid>/environ supplies only selected identity fields. A caller-supplied
+exact Pi process may read one process-generation-unique structured session file.
+Never enumerate processes or emit argv/env. Unsupported/restricted evidence
+remains unavailable.
 """
 import ctypes as C
 import json
@@ -33,8 +34,22 @@ class BSD(C.Structure):
         + [("nice", C.c_int32), ("start_sec", C.c_uint64), ("start_usec", C.c_uint64)])
 
 
+def selected_environment_entries(entries):
+    """Parse NUL-delimited env entries in memory; keep only identity fields."""
+    result = {}
+    allowed = {k.encode("ascii") for k in KEYS}
+    for entry in entries:
+        key, sep, value = entry.partition(b"=")
+        if key in allowed and sep:
+            name = key.decode("ascii")
+            if name in result:
+                raise ValueError("mehrdeutige Prozessidentität")
+            result[name] = value.decode("utf-8", "strict")
+    return result
+
+
 def selected_environment(raw):
-    """Parse the OS buffer in memory; discard argv and all non-identity fields."""
+    """Parse the Darwin OS buffer in memory; discard argv and other fields."""
     argc = int.from_bytes(raw[:4], byteorder=sys.byteorder, signed=True)
     if not 0 < argc < 100000:
         raise ValueError("Prozessargumente unlesbar")
@@ -43,15 +58,7 @@ def selected_environment(raw):
         pos += 1
     for _ in range(argc):
         pos = raw.index(b"\0", pos) + 1
-    result = {}
-    for entry in raw[pos:].split(b"\0"):
-        key, sep, value = entry.partition(b"=")
-        if key in {k.encode("ascii") for k in KEYS} and sep:
-            name = key.decode("ascii")
-            if name in result:
-                raise ValueError("mehrdeutige Prozessidentität")
-            result[name] = value.decode("utf-8", "strict")
-    return result
+    return selected_environment_entries(raw[pos:].split(b"\0"))
 
 
 class Darwin:
@@ -78,6 +85,103 @@ class Darwin:
         if self.lib.sysctl(mib, 3, buf, C.byref(size), None, 0) != 0:
             raise ValueError("Owner-Prozessidentität nicht lesbar")
         return selected_environment(buf.raw[:size.value])
+
+
+class Linux:
+    def __init__(self, proc_root="/proc", clock_ticks=None, boot_time_ns=None):
+        if not sys.platform.startswith("linux"):
+            raise ValueError("Firstmate identity is unsupported on this operating system")
+        self.proc_root = Path(proc_root)
+        self.clock_ticks = int(clock_ticks or os.sysconf("SC_CLK_TCK"))
+        if self.clock_ticks <= 0:
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        self.boot_time_ns = int(boot_time_ns) if boot_time_ns is not None else self._boot_time_ns()
+
+    def _read_file(self, path, limit=1024 * 1024):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            chunks, total = [], 0
+            while total <= limit:
+                chunk = os.read(fd, min(65536, limit + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            if total > limit:
+                raise ValueError("Owner-Prozessidentität nicht lesbar")
+            return b"".join(chunks)
+        finally:
+            os.close(fd)
+
+    def _boot_time_ns(self):
+        for line in self._read_file(self.proc_root / "stat", 1024 * 1024).splitlines():
+            key, _, value = line.partition(b" ")
+            if key == b"btime" and value.strip().isdigit():
+                return int(value.strip()) * 10**9
+        raise ValueError("Owner-Prozess nicht bestätigt")
+
+    def _stat_fields(self, pid):
+        raw = self._read_file(self.proc_root / str(pid) / "stat", 65536).strip()
+        close = raw.rfind(b")")
+        if close < 0:
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        try:
+            found_pid = int(raw[:raw.index(b" ")])
+        except (ValueError, IndexError):
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        fields = raw[close + 2:].split()
+        if found_pid != pid or len(fields) <= 19:
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        try:
+            ppid = int(fields[1])
+            start_ticks = int(fields[19])
+        except (ValueError, IndexError):
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        return fields[0].decode("ascii", "replace"), ppid, start_ticks
+
+    def _status_uid(self, pid):
+        state = uid = None
+        for line in self._read_file(self.proc_root / str(pid) / "status", 1024 * 1024).splitlines():
+            if line.startswith(b"State:"):
+                parts = line.split()
+                state = parts[1].decode("ascii", "replace") if len(parts) > 1 else ""
+            elif line.startswith(b"Uid:"):
+                parts = line.split()
+                if len(parts) < 2:
+                    raise ValueError("Owner-Prozess nicht bestätigt")
+                try:
+                    uid = int(parts[1])
+                except ValueError:
+                    raise ValueError("Owner-Prozess nicht bestätigt")
+        if uid is None or (state == "Z"):
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        return uid
+
+    def process(self, pid):
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        state, ppid, start_ticks = self._stat_fields(pid)
+        uid = self._status_uid(pid)
+        if uid != os.getuid() or state == "Z":
+            raise ValueError("Owner-Prozess nicht bestätigt")
+        start = self.boot_time_ns + (start_ticks * 10**9) // self.clock_ticks
+        return {"pid": pid, "ppid": ppid, "uid": uid, "start": start}
+
+    def environment(self, pid):
+        try:
+            raw = self._read_file(self.proc_root / str(pid) / "environ", 1024 * 1024)
+        except OSError as error:
+            raise ValueError("Owner-Prozessidentität nicht lesbar") from error
+        return selected_environment_entries(raw.split(b"\0"))
+
+
+def system_reader():
+    if sys.platform == "darwin":
+        return Darwin()
+    if sys.platform.startswith("linux"):
+        return Linux()
+    raise ValueError("Firstmate identity is unsupported on this operating system")
 
 
 def read_session_selection(path, session_id="", expected_cwd=""):
@@ -183,7 +287,7 @@ def session_selection(environment, expected_cwd="", process_start=0, harness="")
 
 def observe_runtime(pid, expected_cwd="", harness="", os_reader=None):
     """Read one caller-supplied process; do not enumerate or discover PIDs."""
-    reader = os_reader if os_reader is not None else Darwin()
+    reader = os_reader if os_reader is not None else system_reader()
     before = reader.process(pid)
     environment = reader.environment(pid)
     runtime = session_selection(environment, expected_cwd, before["start"], harness)
@@ -227,7 +331,7 @@ def harness_alive(root, pid):
 
 
 def observe(home, root, shell_pid=None, os_reader=None, classifier=harness_alive):
-    reader = os_reader if os_reader is not None else Darwin()
+    reader = os_reader if os_reader is not None else system_reader()
     pid, lock = read_lock(home)
     before = reader.process(pid)
     if not before["start"] <= lock[3] <= time.time_ns() + 2 * 10**9:

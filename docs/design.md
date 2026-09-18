@@ -2,12 +2,12 @@
 
 ## Ziel
 
-TShepherd ist eine eigenständige, lokale Live-Terminalübersicht für die eigenen
-Firstmate-Worker. Sie läuft in einem normalen Herdr-Tab auf macOS. Die visuelle
-Referenz ist die Vorgabe für den Terminal-Inhaltsbereich: kompakte Farbblöcke mit
-Zahlen links neben den Labels, Abstand zwischen Projektgruppen, eingerückte und
-bündige Worker-Zeilen. Herdrs Sidebar/Tab-Leiste werden nicht nachgebaut; Branding
-bleibt TShepherd, ohne kopierte Marken, Bilder oder Maskottchen.
+TShepherd is a standalone local live terminal overview for your own Firstmate workers.
+It runs in a normal Herdr tab on macOS or Linux. The visual reference is the contract
+for the terminal content area: compact color blocks with numbers to the left of labels,
+spacing between project groups, and indented aligned worker rows. Herdr's sidebar/tab
+bar is not recreated; the branding remains TShepherd, without copied marks, images, or
+mascots.
 
 Die Ansicht beantwortet: Wer arbeitet, wer wartet, wer ist nativ idle, welche
 Aufgabe ist abgeschlossen und wo fehlt belastbare Information? Aufgabenname und
@@ -153,11 +153,12 @@ Der aktuelle Fleet-Snapshot exportiert keine primäre Chat-Bindung.
 `primary_identity.py` liest deshalb ausschließlich den PID-Lock des expliziten
 Homes und die bestehende Firstmate-Harnessklassifikation aus
 `bin/fm-session-lock-lib.sh`, ohne den Lock zu erwerben oder Dateien zu schreiben.
-Der begrenzte macOS-Unterprozess verwendet `proc_pidinfo(PROC_PIDTBSDINFO)` für
-PID-Startzeit und Abstammung sowie `sysctl(KERN_PROCARGS2)` für sechs ausgewählte
-Herdr-Identitätsfelder. Der OS-Puffer wird nur im Speicher ausgewertet; argv und
-sonstige Umgebungswerte werden weder ausgegeben noch gespeichert. Nicht-macOS und
-eingeschränkte Prozesssicht bleiben ausdrücklich nicht verfügbar.
+The bounded OS subprocess keeps the existing macOS reader (`proc_pidinfo(PROC_PIDTBSDINFO)`
+for PID generation/ancestry and `sysctl(KERN_PROCARGS2)` for selected Herdr identity
+fields) and adds an equivalent Linux `/proc` reader for PID/UID/generation, ancestry,
+and the same selected environment fields. OS buffers are evaluated only in memory;
+argv and other environment values are never emitted or stored. Unsupported platforms
+and restricted process visibility remain explicitly unavailable.
 
 Die Prozessgeneration muss vor der Lock-mtime begonnen haben; Lock-Inode,
 Zeitstempel, Inhalt, Owner-Prozess und dessen eigene injizierte Identität werden
