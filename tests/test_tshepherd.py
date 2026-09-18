@@ -263,6 +263,7 @@ class FakeRunner:
         self.native = 'idle'
         self.runtime = None
         self.pane = 'w1:p1'
+        self.foreground = None
 
     def run(self, argv, timeout, env=None):
         self.calls.append(argv)
@@ -291,9 +292,10 @@ class FakeRunner:
                 pane, agent='wrong' if self.bad == 'provider' else 'pi', agent_status=self.native,
                 focused=True)}}
         if command[:2] == ('pane', 'process-info'):
+            processes = self.foreground or [{
+                'name': 'zsh' if self.bad == 'shell' else 'node', 'pid': 321, 'cwd': str(Path.cwd())}]
             return {'result': {'type': 'pane_process_info', 'process_info': {
-                'pane_id': self.pane, 'foreground_processes': [{
-                    'name': 'zsh' if self.bad == 'shell' else 'node', 'pid': 321, 'cwd': str(Path.cwd())}]}}}
+                'pane_id': self.pane, 'foreground_processes': processes}}}
         if command[:2] == ('agent', 'focus'):
             return {'result': {'type': 'agent_info', 'agent': dict(pane, agent='pi', focused=True)}}
         if command[:2] == ('tab', 'focus'):
@@ -341,6 +343,27 @@ class SourceTests(unittest.TestCase):
         self.runner.runtime = None
         native = self.source.probe(self.task, time.monotonic() + 10)
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model,
+                         '?·?')
+
+    def test_unique_worker_runtime_shows_compact_model_ambiguity_stays_unknown(self):
+        started = time.time_ns() - 10**9
+        cwd = str(Path.cwd())
+        bound = {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
+                 'HERDR_SESSION': 'named', 'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
+                 'HERDR_PANE_ID': 'w1:p1', 'HERDR_WORKSPACE_ID': 'w1', 'HERDR_TAB_ID': 'w1:t1'}
+        self.runner.runtime = {
+            'process': {'pid': 321, 'start': started},
+            'environment': bound,
+            'runtime': {'model': 'xai/grok-4.6', 'effort': 'medium'}}
+        native = self.source.probe(self.task, time.monotonic() + 10)
+        row = app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0]
+        self.assertEqual(row.model, 'Grok·M')
+        self.runner.foreground = [
+            {'name': 'node', 'pid': 321, 'cwd': cwd},
+            {'name': 'node', 'pid': 322, 'cwd': cwd}]
+        ambiguous = self.source.probe(self.task, time.monotonic() + 10)
+        self.assertEqual((ambiguous.model, ambiguous.effort), ('', ''))
+        self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
 
     def test_focus_verified_native_done_without_semantic_completion(self):

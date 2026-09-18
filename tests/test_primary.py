@@ -146,6 +146,36 @@ class OwnerReaderTests(unittest.TestCase):
             self.assertEqual(owner_api.session_selection({}, cwd, 1, 'pi'),
                              {'model': '', 'effort': ''})
 
+    def test_generation_unique_session_uses_birth_not_ctime(self):
+        Path(self.home / 'worktree').mkdir()
+        cwd = str((self.home / 'worktree').resolve())
+        directory = self.home / '.pi/agent/sessions' / ('--' + cwd.strip('/').replace('/', '-') + '--')
+        directory.mkdir(parents=True)
+
+        def write_session(name, model_id):
+            path = directory / name
+            path.write_text('\n'.join([
+                json.dumps({'type': 'session', 'id': name, 'cwd': cwd}),
+                json.dumps({'type': 'model_change', 'id': 'm1', 'parentId': None,
+                            'provider': 'xai', 'modelId': model_id}),
+                json.dumps({'type': 'thinking_level_change', 'id': 'e1', 'parentId': 'm1',
+                            'thinkingLevel': 'medium'}), '']))
+            return path
+
+        stale = write_session('stale.jsonl', 'grok-old')
+        current = write_session('current.jsonl', 'grok-4.6')
+        births = {str(stale): 1_000, str(current): 5 * 10**9}
+        process_start = 4 * 10**9
+        os.utime(stale, None)
+        with patch.object(owner_api.Path, 'home', return_value=self.home):
+            with patch.object(owner_api, 'file_birth_ns', side_effect=lambda path: births[str(path)]):
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': 'xai/grok-4.6', 'effort': 'medium'})
+                births[str(directory / 'extra.jsonl')] = 6 * 10**9
+                write_session('extra.jsonl', 'grok-other')
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': '', 'effort': ''})
+
     def test_runtime_reader_rechecks_exact_process_and_hides_session_path(self):
         session = self.home / 'session.jsonl'
         session.write_text('\n'.join([
@@ -169,11 +199,70 @@ class OwnerReaderTests(unittest.TestCase):
         self.assertEqual(selected, {'HERDR_PANE_ID': 'w1:p1', 'HERDR_ENV': '1', 'PI_SESSION_ID': 's1'})
         with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
             owner_api.selected_environment(buffer(b'HERDR_PANE_ID=w1:p1\0HERDR_PANE_ID=w2:p1\0'))
+        with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
+            owner_api.selected_environment_entries([b'HERDR_ENV=1', b'HERDR_ENV=1'])
         with self.assertRaises(ValueError):
             owner_api.selected_environment(b'bad')
         with patch.object(owner_api.sys, 'platform', 'linux'):
             with self.assertRaisesRegex(ValueError, 'macOS'):
                 owner_api.Darwin()
+
+    def test_linux_reader_supplies_process_generation_and_selected_environment(self):
+        proc = self.home / 'proc'
+        pid, ppid = 1234, 222
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / str(ppid)).mkdir(parents=True)
+        (proc / 'stat').write_text('btime 1000\n')
+        fields = ['S', str(ppid)] + ['0'] * 17 + ['250'] + ['0'] * 4
+        (proc / str(pid) / 'stat').write_text(f'{pid} (pi) ' + ' '.join(fields) + '\n')
+        (proc / str(pid) / 'status').write_text(f'State:\tS (sleeping)\nUid:\t{os.getuid()}\t0\t0\t0\n')
+        (proc / str(pid) / 'environ').write_bytes(
+            b'SECRET=hidden\0HERDR_ENV=1\0HERDR_SESSION=named\0'
+            b'HERDR_SOCKET_PATH=/tmp/herdr.sock\0HERDR_PANE_ID=wA:p1\0'
+            b'HERDR_TAB_ID=wA:t1\0HERDR_WORKSPACE_ID=wA\0FM_TASK_ID=task\0')
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            reader = owner_api.Linux(proc, clock_ticks=100, boot_time_ns=1000 * 10**9)
+        self.assertEqual(reader.process(pid), {
+            'pid': pid, 'ppid': ppid, 'uid': os.getuid(), 'start': 1002500000000})
+        self.assertEqual(reader.environment(pid), {
+            'HERDR_ENV': '1', 'HERDR_SESSION': 'named', 'HERDR_SOCKET_PATH': '/tmp/herdr.sock',
+            'HERDR_PANE_ID': 'wA:p1', 'HERDR_TAB_ID': 'wA:t1', 'HERDR_WORKSPACE_ID': 'wA',
+            'FM_TASK_ID': 'task'})
+        result = owner_api.observe_runtime(pid, '/worktree', os_reader=reader)
+        self.assertNotIn('SECRET', result['environment'])
+        self.assertEqual(result['process']['start'], 1002500000000)
+
+    def test_linux_reader_rejects_wrong_uid_zombie_and_duplicate_identity(self):
+        proc = self.home / 'proc'
+        pid = 1234
+        (proc / str(pid)).mkdir(parents=True)
+        (proc / 'stat').write_text('btime 1000\n')
+        fields = ['S', '1'] + ['0'] * 17 + ['250']
+        (proc / str(pid) / 'stat').write_text(f'{pid} (pi) ' + ' '.join(fields) + '\n')
+        (proc / str(pid) / 'status').write_text('State:\tZ (zombie)\nUid:\t0\t0\t0\t0\n')
+        (proc / str(pid) / 'environ').write_bytes(b'HERDR_ENV=1\0HERDR_ENV=1\0')
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            reader = owner_api.Linux(proc, clock_ticks=100, boot_time_ns=1000 * 10**9)
+        with self.assertRaises(ValueError):
+            reader.process(pid)
+        (proc / str(pid) / 'status').write_text(f'State:\tS (sleeping)\nUid:\t{os.getuid()}\t0\t0\t0\n')
+        with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
+            reader.environment(pid)
+
+    def test_linux_reader_missing_proc_is_owner_unconfirmed(self):
+        proc = self.home / 'proc'
+        proc.mkdir()
+        (proc / 'stat').write_text('btime 1000\n')
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            reader = owner_api.Linux(proc, clock_ticks=100, boot_time_ns=1000 * 10**9)
+        with self.assertRaisesRegex(ValueError, 'Owner-Prozess nicht bestätigt'):
+            reader.process(1234)
+        (proc / '1234').mkdir()
+        with self.assertRaisesRegex(ValueError, 'Owner-Prozessidentität nicht lesbar'):
+            reader.environment(1234)
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            with self.assertRaisesRegex(ValueError, 'Owner-Prozess nicht bestätigt'):
+                owner_api.Linux(self.home / 'missing-proc', clock_ticks=100)
 
 
 class PrimaryRunner(FakeRunner):

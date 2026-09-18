@@ -94,7 +94,7 @@ def fresh(observation, now, ttl):
 
 
 def process_start(value):
-    """Convert a confirmed Darwin process-generation timestamp, or fail closed."""
+    """Convert a confirmed process-generation timestamp, or fail closed."""
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return 0
     started = value / 10**9

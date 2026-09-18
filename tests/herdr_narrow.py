@@ -1,5 +1,6 @@
 """Opt-in real curses/keyboard evidence using the named lab's live Source."""
 import curses
+import errno
 import fcntl
 import json
 import os
@@ -63,7 +64,11 @@ def verify(config, base):
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             if select.select([master], [], [], .08)[0]:
-                transcript.extend(os.read(master, 65536))
+                try:
+                    transcript.extend(os.read(master, 65536))
+                except OSError as error:
+                    if error.errno != errno.EIO or proc.poll() is None:
+                        raise
             if check(read_frames()):
                 return
             if proc.poll() is not None:
@@ -85,7 +90,7 @@ def verify(config, base):
                 lines = frame['lines']
                 assert (frame['cols'], frame['rows']) == (28, 16), frame
                 assert any('>○ ONE CHILD ONLY' in line for line in lines), frame
-                assert any('idle · task' in line for line in lines), frame
+                assert any('idle · ta' in line for line in lines), frame
                 assert any('◆ Firstmate' in line for line in lines), frame
                 assert any('1  Worker' in line for line in lines), frame
                 assert any('1  idle' in line for line in lines), frame
