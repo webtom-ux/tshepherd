@@ -12,7 +12,7 @@ TShepherd does not create or manage tasks.
 
 ## Requirements
 
-- **macOS** for the full experience, including switching to Firstmate itself.
+- **macOS or Linux** for the full experience, including switching to Firstmate itself.
 - **Python 3.9+ with curses** and **Git**. No additional Python packages needed.
 - An existing [Firstmate](https://github.com/kunchenguid/firstmate) installation with its fleet snapshot command
   (`fm-fleet-snapshot.v1`) and dependencies, including **Bash** and **jq**.
@@ -109,7 +109,7 @@ confirmed; until then, its task time is `—`.
 If TShepherd did not observe a trustworthy active interval first, or the current
 status is unknown, task time remains `—`. Restarting TShepherd loses retained
 durations. Session time can continue independently of task completion.
-The [design document](docs/design.md#umsetzung)
+The [design document](docs/design.md#implementation)
 defines the start and end evidence requirements.
 Native `done` means ready for input with an unseen response and stays distinct
 from `idle`. The unseen-response detail appears in wide worker rows and in the
