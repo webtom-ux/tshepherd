@@ -8,6 +8,7 @@ Never enumerate processes or emit argv/env. Unsupported/restricted evidence
 remains unavailable.
 """
 import ctypes as C
+import ctypes.util
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,48 @@ def selected_environment_entries(entries):
                 raise ValueError("mehrdeutige Prozessidentität")
             result[name] = value.decode("utf-8", "strict")
     return result
+
+
+class _StatxTimestamp(C.Structure):
+    _fields_ = (("tv_sec", C.c_int64), ("tv_nsec", C.c_uint32), ("__reserved", C.c_int32))
+
+
+class _Statx(C.Structure):
+    # linux/stat.h: only stx_mask and stx_btime are read.
+    _fields_ = (("stx_mask", C.c_uint32), ("stx_blksize", C.c_uint32),
+                ("stx_attributes", C.c_uint64), ("stx_nlink", C.c_uint32),
+                ("stx_uid", C.c_uint32), ("stx_gid", C.c_uint32),
+                ("stx_mode", C.c_uint16), ("__spare0", C.c_uint16),
+                ("stx_ino", C.c_uint64), ("stx_size", C.c_uint64),
+                ("stx_blocks", C.c_uint64), ("stx_attributes_mask", C.c_uint64),
+                ("stx_atime", _StatxTimestamp), ("stx_btime", _StatxTimestamp),
+                ("stx_ctime", _StatxTimestamp), ("stx_mtime", _StatxTimestamp),
+                ("spare", C.c_uint64 * 16))
+
+
+def file_birth_ns(path):
+    """Birth time of one file; ctime is not a generation substitute."""
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    birth = getattr(info, "st_birthtime", None)
+    if isinstance(birth, (int, float)) and birth > 0:
+        return int(birth * 10**9)
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        libc = C.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        libc.statx.argtypes = (C.c_int, C.c_char_p, C.c_int, C.c_uint, C.POINTER(_Statx))
+        buf = _Statx()
+        # AT_FDCWD, AT_SYMLINK_NOFOLLOW, STATX_BTIME
+        if libc.statx(-100, os.fsencode(path), 0x100, 0x800, C.byref(buf)) != 0:
+            return None
+        if buf.stx_mask & 0x800 == 0 or buf.stx_btime.tv_sec <= 0:
+            return None
+        return buf.stx_btime.tv_sec * 10**9 + buf.stx_btime.tv_nsec
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
 
 
 def selected_environment(raw):
@@ -277,9 +320,13 @@ def session_selection(environment, expected_cwd="", process_start=0, harness="")
     for entry in entries:
         try:
             info = entry.stat(follow_symlinks=False)
-            born = int(getattr(info, "st_birthtime", info.st_ctime) * 10**9)
-            if (entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=False)
-                    and info.st_uid == os.getuid() and born + 2 * 10**9 >= process_start):
+            if not (entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=False)
+                    and info.st_uid == os.getuid()):
+                continue
+            born = file_birth_ns(entry.path)
+            if born is None:
+                return {"model": "", "effort": ""}
+            if born + 2 * 10**9 >= process_start:
                 candidates.append(Path(entry.path))
         except OSError:
             return {"model": "", "effort": ""}

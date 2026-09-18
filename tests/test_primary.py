@@ -146,6 +146,36 @@ class OwnerReaderTests(unittest.TestCase):
             self.assertEqual(owner_api.session_selection({}, cwd, 1, 'pi'),
                              {'model': '', 'effort': ''})
 
+    def test_generation_unique_session_uses_birth_not_ctime(self):
+        Path(self.home / 'worktree').mkdir()
+        cwd = str((self.home / 'worktree').resolve())
+        directory = self.home / '.pi/agent/sessions' / ('--' + cwd.strip('/').replace('/', '-') + '--')
+        directory.mkdir(parents=True)
+
+        def write_session(name, model_id):
+            path = directory / name
+            path.write_text('\n'.join([
+                json.dumps({'type': 'session', 'id': name, 'cwd': cwd}),
+                json.dumps({'type': 'model_change', 'id': 'm1', 'parentId': None,
+                            'provider': 'xai', 'modelId': model_id}),
+                json.dumps({'type': 'thinking_level_change', 'id': 'e1', 'parentId': 'm1',
+                            'thinkingLevel': 'medium'}), '']))
+            return path
+
+        stale = write_session('stale.jsonl', 'grok-old')
+        current = write_session('current.jsonl', 'grok-4.6')
+        births = {str(stale): 1_000, str(current): 5 * 10**9}
+        process_start = 4 * 10**9
+        os.utime(stale, None)
+        with patch.object(owner_api.Path, 'home', return_value=self.home):
+            with patch.object(owner_api, 'file_birth_ns', side_effect=lambda path: births[str(path)]):
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': 'xai/grok-4.6', 'effort': 'medium'})
+                births[str(directory / 'extra.jsonl')] = 6 * 10**9
+                write_session('extra.jsonl', 'grok-other')
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': '', 'effort': ''})
+
     def test_runtime_reader_rechecks_exact_process_and_hides_session_path(self):
         session = self.home / 'session.jsonl'
         session.write_text('\n'.join([
