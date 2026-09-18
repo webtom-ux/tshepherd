@@ -99,20 +99,23 @@ class Linux:
 
     def _read_file(self, path, limit=1024 * 1024):
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
         try:
-            chunks, total = [], 0
-            while total <= limit:
-                chunk = os.read(fd, min(65536, limit + 1 - total))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-            if total > limit:
-                raise ValueError("Owner-Prozessidentität nicht lesbar")
-            return b"".join(chunks)
-        finally:
-            os.close(fd)
+            fd = os.open(path, flags)
+            try:
+                chunks, total = [], 0
+                while total <= limit:
+                    chunk = os.read(fd, min(65536, limit + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                if total > limit:
+                    raise ValueError("Owner-Prozessidentität nicht lesbar")
+                return b"".join(chunks)
+            finally:
+                os.close(fd)
+        except OSError as error:
+            raise ValueError("Owner-Prozess nicht bestätigt") from error
 
     def _boot_time_ns(self):
         for line in self._read_file(self.proc_root / "stat", 1024 * 1024).splitlines():
@@ -171,7 +174,7 @@ class Linux:
     def environment(self, pid):
         try:
             raw = self._read_file(self.proc_root / str(pid) / "environ", 1024 * 1024)
-        except OSError as error:
+        except ValueError as error:
             raise ValueError("Owner-Prozessidentität nicht lesbar") from error
         return selected_environment_entries(raw.split(b"\0"))
 

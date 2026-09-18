@@ -219,6 +219,21 @@ class OwnerReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'mehrdeutig'):
             reader.environment(pid)
 
+    def test_linux_reader_missing_proc_is_owner_unconfirmed(self):
+        proc = self.home / 'proc'
+        proc.mkdir()
+        (proc / 'stat').write_text('btime 1000\n')
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            reader = owner_api.Linux(proc, clock_ticks=100, boot_time_ns=1000 * 10**9)
+        with self.assertRaisesRegex(ValueError, 'Owner-Prozess nicht bestätigt'):
+            reader.process(1234)
+        (proc / '1234').mkdir()
+        with self.assertRaisesRegex(ValueError, 'Owner-Prozessidentität nicht lesbar'):
+            reader.environment(1234)
+        with patch.object(owner_api.sys, 'platform', 'linux'):
+            with self.assertRaisesRegex(ValueError, 'Owner-Prozess nicht bestätigt'):
+                owner_api.Linux(self.home / 'missing-proc', clock_ticks=100)
+
 
 class PrimaryRunner(FakeRunner):
     def __init__(self):

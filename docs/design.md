@@ -1,6 +1,6 @@
-# Anforderungen und Design
+# Requirements and Design
 
-## Ziel
+## Goal
 
 TShepherd is a standalone local live terminal overview for your own Firstmate workers.
 It runs in a normal Herdr tab on macOS or Linux. The visual reference is the contract
@@ -9,150 +9,147 @@ spacing between project groups, and indented aligned worker rows. Herdr's sideba
 bar is not recreated; the branding remains TShepherd, without copied marks, images, or
 mascots.
 
-Die Ansicht beantwortet: Wer arbeitet, wer wartet, wer ist nativ idle, welche
-Aufgabe ist abgeschlossen und wo fehlt belastbare Information? Aufgabenname und
-letzte bekannte Aktivität helfen bei der Orientierung. Eine ausdrückliche Auswahl
-mit Enter wechselt zur zugehörigen Herdr-Ansicht.
+The view answers: who is working, who is waiting, who is natively idle, which
+task is completed, and where trustworthy information is missing? Task name and
+latest known activity help with orientation. An explicit selection with Enter
+switches to the matching Herdr view.
 
-## Feste Grenzen
+## Hard limits
 
-- Firstmate bleibt alleinige Aufgaben- und Inventarquelle; keine zweite Verwaltung.
-- Ein explizites Home bestimmt die Eigentumsgrenze. Kein Scan gemeinsam genutzter
-  Herdr-Namespaces, keine automatische Rekursion in andere Homes.
-- Native Agentaktivität und semantischer Aufgabenstatus sind unabhängige Achsen.
-  Fehlende, widersprüchliche, veraltete oder unerreichbare Daten dürfen nicht als
-  bestätigtes idle oder als aktueller Abschluss erscheinen.
-- Es gibt ausschließlich Beobachtung und expliziten Fokus: keine Spawn-, Stop-,
-  Send-, Delete-, Scheduler- oder sonstigen Steuerfunktionen.
-- Keine globale Installation, Telemetrie, öffentliche Dienste oder Änderungen an
-  Firstmates gemeinsamen Skripten und Konfigurationen.
+- Firstmate remains the sole task and inventory source; there is no second control plane.
+- An explicit home defines the ownership boundary. No scan of shared Herdr
+  namespaces, and no automatic recursion into other homes.
+- Native agent activity and semantic task status are independent axes.
+  Missing, contradictory, stale, or unreachable data must not appear as
+  confirmed idle or as a current completion.
+- Observation and explicit focus only: no spawn, stop, send, delete,
+  scheduler, or other control functions.
+- No global install, telemetry, public services, or changes to Firstmate's
+  shared scripts and configuration.
 
-## Umsetzung
+## Implementation
 
-Eine Python-Standardbibliotheksanwendung (`tshepherd.py`) vermeidet zusätzliche
-Frameworks. `curses.wrapper` besitzt den Terminal-Lebenszyklus. Darstellung,
-Zustandsprojektion, Auswahl, Datenzugriff und Polling sind getrennte Funktionen/
-Klassen und ohne laufende Flotte prüfbar.
+A Python standard-library application (`tshepherd.py`) avoids extra frameworks.
+`curses.wrapper` owns the terminal lifecycle. Rendering, state projection,
+selection, data access, and polling are separate functions/classes and are
+testable without a live fleet.
 
-`Source.snapshot` ruft die JSON-Schnittstelle des konfigurierten Code-Roots mit
-explizitem Home auf. Schema, Home und eindeutige Worker-Identitäten werden geprüft.
-Nur die `tasks`-Metadaten bestimmen Worker-Zeilen. Die unterstützten, kurzen Titel-/Aktivitäts-
-Felder werden verwendet, niemals Rohlogs, Berichtsinhalte oder Transkripte.
+`Source.snapshot` calls the JSON interface of the configured code root with an
+explicit home. Schema, home, and unique worker identities are checked.
+Only `tasks` metadata determines worker rows. The supported short title/activity
+fields are used, never raw logs, report bodies, or transcripts.
 
-`Source.probe` ergänzt pro exakt gebundenem lokalem Herdr-Pane eine native Beobachtung.
-Sie prüft Session/Kompatibilität, Pane-ID, Provider und Workspace-/Tab-/Terminal-ID.
-`default` wird nur für ein ausdrücklich so geroutetes Ziel auf Herdrs beidseitiges
-JSON-`null` normalisiert. Fehlende Sessionfelder und widersprüchliche Socket-
-Namespaces werden abgelehnt. Öffentliche Pane-Handles verwenden Herdrs dokumentierte
-Großbuchstaben-Base32-Zeichen; die physische Roundtrip-Prüfung bleibt unverändert.
-Shell-only-Vordergrund oder fehlende Prozessinformationen reichen nicht aus, um
-veraltete Registrierungen als live zu bestätigen. Native `idle` und `done` sind
-beide eingabebereit; `done` bleibt als ungesehene Antwort sichtbar von `idle`
-getrennt. Eine native Meldung ist dennoch keine semantische Aussage über laufende
-Tools; die UI benennt diese Grenze.
-Eine erfolgreiche Prüfung liefert die physische Bindung unabhängig von der
-Aktivitätszuordnung. `Source.focus` verlangt diese Bindung, keinen bestimmten
-Live-Zustand; auch der eingabebereite Zustand `done` verhindert deshalb den
-Fokus nicht. Alle nachfolgenden Eigentums-, Frische- und
-Identitätsprüfungen bleiben erforderlich.
+`Source.probe` adds a native observation for each exactly bound local Herdr pane.
+It checks session/compatibility, pane ID, provider, and workspace/tab/terminal ID.
+`default` is normalized to Herdr's bilateral JSON `null` only for a target that is
+explicitly routed that way. Missing session fields and contradictory socket
+namespaces are rejected. Public pane handles use Herdr's documented uppercase
+Base32 alphabet; the physical round-trip check is unchanged.
+A shell-only foreground or missing process information is not enough to confirm
+stale registrations as live. Native `idle` and `done` are both ready for input;
+`done` stays visible as an unseen response, distinct from `idle`. A native report
+is still not a semantic statement about running tools; the UI names that limit.
+A successful check yields the physical binding independently of the activity
+assignment. `Source.focus` requires that binding, not a particular live state;
+the input-ready `done` state therefore does not block focus. All subsequent
+ownership, freshness, and identity checks remain required.
 
-`Poller` besitzt einen Collector und einen separaten Single-Flight-Fokusworker.
-Die ergänzende Quota-Anzeige bleibt von Snapshot-Inventar, Aktivität und
-Fokusautorität getrennt. Der Collector liest sie nach dem Freigeben seines
-Busy-Zustands und liefert sie als separates Ergebnis an `View`.
-Provider-Auswahl, Frische und Darstellung beschreibt die
+`Poller` owns a collector and a separate single-flight focus worker.
+The supplementary quota display stays independent of snapshot inventory,
+activity, and focus authority. The collector reads it after releasing its
+busy state and delivers it to `View` as a separate result.
+Provider selection, freshness, and display are described in the
 [README](../README.md#launch-with-just-tshepherd).
-Enter wird auch während eines Refreshs sofort angenommen; ein zweiter Fokusauftrag
-während einer laufenden Fokusprüfung wird abgelehnt, nicht später nachgeholt.
-Innerhalb eines Refreshs gibt es maximal vier native Leser mit einem gemeinsamen
-Zeitbudget. Fokus nutzt daneben nur seine begrenzten zielbezogenen Reads. Subprozesse besitzen eigene Gruppen,
-werden zeitlich und in ihrer Ausgabe begrenzt und bei Abbruch beendet. Kein zusätzlicher
-Dienst und keine dauerhaft gespeicherte Kopie des Aufgabenstatus entstehen.
-R und begrenzte unknown-Retries wecken denselben Collector, ohne Agentensteuerung.
-Ursachenprüfung, Schwelle/Cooldown und Grenzen: [Status-Neuerkennung](status-rediscovery.md).
+Enter is accepted immediately even during a refresh; a second focus request
+during an in-flight focus check is refused, not queued for later.
+Within a refresh there are at most four native readers with a shared time
+budget. Focus besides that uses only its bounded target-related reads. Subprocesses
+have their own groups, are bounded in time and output, and are terminated on
+cancel. No extra service and no durable copy of task status are created.
+R and bounded unknown retries wake the same collector, without agent control.
+Cause check, threshold/cooldown, and limits: [Status rediscovery](status-rediscovery.md).
 
-`View` hält Snapshot, native Messungen, Quota-Beobachtungen, Auswahl und bestätigte Aufgabenintervalle
-im Speicher. Für Worker gilt die
-Kombination aus Task-ID, Spawn-Generation, Backend, Endpunkt und Provider, nicht die
-Zeilennummer. Beim Dispatch wird zusätzlich die angezeigte physische Bindung
-mitgegeben, sofern bestätigt. Die bestätigte physische Auswahl bleibt auch über
-Messausfälle erhalten; eine abweichende neue Bindung verlangt explizite Neuauswahl. Sortieren oder Entfernen darf keinen anderen Worker
-stillschweigend zum Ziel machen. Enter prüft das ausgewählte Ziel gegen das letzte
-vollständig gelieferte, weiterhin frische Snapshot-Inventar. Die aktuelle lokale
-Eigentumsprüfung liest ausschließlich dessen exakt gebundene Metadatendatei;
-[Vertrag und Autorität](focus-latency.md#zielbezogener-eigentumsbeleg) beschränken
-Felder, Größe, Dateityp und Pfad. Nach den nativen Reads werden Eigentum und
-Frische erneut geprüft; anschließend bestätigt ein letzter `pane get` noch einmal
-dieselbe physische Bindung vor der folgenden Mutation. Weder ein unveränderter Snapshot allein
-noch ein bloß gespeicherter Pane-Handle autorisiert Fokus. Der CLI-
-Aufruf erhält sichere getrennte Argumente mit expliziter Session. Nach bestätigtem
-Agent-Fokus prüft `focus_target` sämtliche zielbezogenen Guards erneut und verlangt dieselbe
-physische Identität, bevor deren Tab explizit fokussiert wird. Dieser zweite
-CLI-Schritt projiziert Herdrs Session-Clientansichten; Agent-Fokus allein tut das
-nicht. Anschließend werden Eigentum, Frische, physische Bindung und exakter
-Agent-Fokus erneut bestätigt. Teilfehler behaupten keinen vollständigen Erfolg;
-der Footer bestätigt Server-Zustand, kein bestimmtes OS-Fenster. Atomarer Schutz
-gegen Änderungen nach dieser letzten Prüfung ist mit der verwendeten API nicht möglich.
-Die eigene Auswahlidentität und Zielprüfung für Firstmate beschreibt
-[Primärer Chat](#primärer-chat).
+`View` keeps snapshot, native measurements, quota observations, selection, and
+confirmed task intervals in memory. For workers the combination of task ID,
+spawn generation, backend, endpoint, and provider applies, not the row number.
+On dispatch the displayed physical binding is also passed along when confirmed.
+The confirmed physical selection survives measurement failures; a different new
+binding requires explicit reselection. Sorting or removal must not silently make
+another worker the target. Enter checks the selected target against the last
+fully delivered, still-fresh snapshot inventory. The current local ownership
+check reads only that worker's exactly bound metadata file;
+[contract and authority](focus-latency.md#target-scoped-ownership-proof) limit
+fields, size, file type, and path. After the native reads, ownership and
+freshness are checked again; then a final `pane get` confirms the same physical
+binding once more before the following mutation. Neither an unchanged snapshot
+alone nor a merely stored pane handle authorizes focus. The CLI call receives
+safe separate arguments with an explicit session. After confirmed agent focus,
+`focus_target` rechecks every target-related guard and requires the same
+physical identity before that tab is focused explicitly. This second CLI step
+projects Herdr's session client views; agent focus alone does not.
+Ownership, freshness, physical binding, and exact agent focus are then
+confirmed again. Partial failures do not claim complete success; the footer
+confirms server state, not a particular OS window. Atomic protection against
+changes after this last check is not possible with the API in use.
+Firstmate's own selection identity and target check are described in
+[Primary chat](#primary-chat).
 
-Die Ansicht zeigt Abrufalter, Datenfehler, Inventarlücken und unbekannte Zustände.
-`rows_for` ergänzt bei bestätigtem nativem `done` dessen Erklärung im Anzeigegrund,
-ohne die gelieferte Aufgabenaktivität zu ersetzen. Bei frischem Snapshot und
-gültiger nativer Messung, aber veraltetem `current_state`, bleibt die Aufgabenachse
-`unknown`; ihr Frischehinweis bleibt neben der nativen Erklärung erhalten.
-Zähler sind explizit Beobachtungszahlen; `completed` gehört zur Aufgabenachse und
-überlappt mit Live-Zuständen. Farbige Zahlenblöcke stehen vertikal neben dem Branding,
-Projektgruppen tragen eigene Farben und eingerückte einzeilige Worker. Agent, Model, Live,
-Aufgabe, Aufgabenzeit und letzte Aktivität stehen auf festen Zellspalten. Die Model-Zelle liest
-bei Pi ausschließlich eine innerhalb der bestätigten Prozessgeneration eindeutige
-Sessiondatei des exakten Worktrees und folgt deren aktiver Eintragskette.
-Die benutzerseitige Bedeutung der Modell-/Effortlabels beschreibt die
-[README](../README.md#launch-with-just-tshepherd); die Ableitung implementiert
+The view shows fetch age, data errors, inventory gaps, and unknown states.
+`rows_for` appends the native `done` explanation to the display reason when
+that state is confirmed, without replacing the delivered task activity.
+With a fresh snapshot and a valid native measurement but a stale `current_state`,
+the task axis stays `unknown`; its freshness hint remains next to the native
+explanation. Counters are explicit observation counts; `completed` belongs to
+the task axis and overlaps with live states. Colored number blocks sit
+vertically beside the branding; project groups have their own colors and
+indented single-line workers. Agent, model, live, task, task time, and latest
+activity sit on fixed cell columns. For Pi, the model cell reads only a session
+file that is unique within the confirmed process generation of the exact
+worktree and follows that file's active entry chain.
+User-facing meaning of the model/effort labels is described in the
+[README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.
-Launch-/Dispatch-Metadaten sind kein Ersatz für die aktuelle Auswahl.
-Die Anordnung und Bedeutung der Zeitanzeige beschreibt die
-[README](../README.md#launch-with-just-tshepherd). Beide Zeitbasen
-stammen aus der erneut bestätigten Prozessgeneration: Bei Workern muss derselbe
-Prozess über seine selektierte Umgebung exakt an Task-ID, Spawn-Bindung und Pane
-gebunden sein; beim primären Chat gilt die verifizierte Lock-Owner-Generation.
-Snapshot-Beobachtungszeiten und unbestätigte Metadaten werden nicht als Startzeit
-gedeutet. `rows_for` gibt den Aufgabenstart nur bei frischem, bestätigtem Outcome
-`working`, `parked`, `blocked` oder `paused` frei. `View` merkt sich für diese
-identitätsgleiche Worker-Zeile das zuletzt bestätigte Intervall vom Aufgabenstart
-bis `Native.observed` der frischen nativen Messung. Diese Obergrenze ist kein
-autoritativer Abschlusszeitpunkt; Zeit bis zur späteren Abschlussmeldung wird
-nicht hinzugerechnet. Bei frischem Outcome `done` oder `failed` verwendet die
-Anzeige dieses Intervall auch ohne aktuelle native Zeitmessung. Fehlende Messungen
-für dieselbe Identität löschen es nicht. Eine weitere bestätigte aktive Messung
-aktualisiert das Intervall; ein anderer bestätigter Aufgabenstart ersetzt dabei
-den bisherigen Start. Entfernte oder geänderte Zeilenidentitäten verlieren ihr
-Intervall. Die Regression
+Launch/dispatch metadata is not a substitute for the current selection.
+Layout and meaning of the time display are described in the
+[README](../README.md#launch-with-just-tshepherd). Both time bases come from the
+reconfirmed process generation: for workers the same process must be bound
+exactly to task ID, spawn binding, and pane through its selected environment;
+for the primary chat the verified lock-owner generation applies.
+Snapshot observation times and unconfirmed metadata are not treated as a start
+time. `rows_for` releases the task start only for a fresh, confirmed outcome of
+`working`, `parked`, `blocked`, or `paused`. `View` remembers, for that
+identity-equal worker row, the last confirmed interval from task start to
+`Native.observed` of the fresh native measurement. This upper bound is not an
+authoritative completion time; time until a later completion report is not
+added. For a fresh `done` or `failed` outcome the display uses this interval
+even without a current native time measurement. Missing measurements for the
+same identity do not delete it. Another confirmed active measurement updates
+the interval; a different confirmed task start replaces the previous start.
+Removed or changed row identities lose their interval. The regression
 `test_terminal_task_duration_survives_missing_native_measurements` in
-`tests/test_tshepherd.py` deckt Messausfall, neuen Start und Identitätswechsel ab.
-Der Sessionstart hängt nicht vom Outcome ab. Beide Starts erfordern eine
-frische, identitätsgleiche native Messung, bei Workern zusätzlich einen frischen
-Snapshot. Die Zeitwerte beeinflussen die Sortierung nicht und werden nicht
-dauerhaft gespeichert.
-Quelltextfelder werden von Steuerzeichen bereinigt; Formatierungsabstände bleiben
-beim Kürzen erhalten.
-Unter 78 Spalten werden Zeilen gestapelt. Unicode-Breiten werden berücksichtigt. Farben sind nicht
-die einzige Kodierung: Zustandswörter bleiben lesbar.
+`tests/test_tshepherd.py` covers measurement loss, a new start, and identity
+change. Session start does not depend on outcome. Both starts require a fresh,
+identity-equal native measurement, and for workers also a fresh snapshot.
+The time values do not affect sorting and are not stored durably.
+Source text fields are stripped of control characters; formatting spaces are
+kept when truncating.
+Below 78 columns, rows are stacked. Unicode widths are taken into account.
+Colors are not the only encoding: state words remain readable.
 
-## Primärer Chat
+## Primary chat
 
-Die feste `PrimaryRow` steht unabhängig von Worker-Sortierung und Scrollposition
-über den Projektgruppen. Sie besitzt keine Task-Metadaten und keinen Outcome;
-alle bestehenden Zähler bleiben ausschließlich Worker-Zähler. Native Aktivität
-bleibt auch hier unabhängig von Fokusfähigkeit: natives `done` ist eingabebereit
-und als ungesehene Antwort sichtbar; bei bestätigter Identität bleibt es erreichbar.
-Fehlende oder veraltete Evidenz wird
-sichtbar unavailable/unknown, nie durch einen anderen Endpunkt ersetzt.
+The fixed `PrimaryRow` sits above the project groups independently of worker
+sort order and scroll position. It has no task metadata and no outcome;
+all existing counters remain worker-only counters. Native activity stays
+independent of focusability here as well: native `done` is ready for input
+and visible as an unseen response; with confirmed identity it remains reachable.
+Missing or stale evidence is visibly unavailable/unknown, never replaced by
+another endpoint.
 
-Der aktuelle Fleet-Snapshot exportiert keine primäre Chat-Bindung.
-`primary_identity.py` liest deshalb ausschließlich den PID-Lock des expliziten
-Homes und die bestehende Firstmate-Harnessklassifikation aus
-`bin/fm-session-lock-lib.sh`, ohne den Lock zu erwerben oder Dateien zu schreiben.
+The current fleet snapshot does not export a primary chat binding.
+`primary_identity.py` therefore reads only the PID lock of the explicit home
+and the existing Firstmate harness classification from
+`bin/fm-session-lock-lib.sh`, without acquiring the lock or writing files.
 The bounded OS subprocess keeps the existing macOS reader (`proc_pidinfo(PROC_PIDTBSDINFO)`
 for PID generation/ancestry and `sysctl(KERN_PROCARGS2)` for selected Herdr identity
 fields) and adds an equivalent Linux `/proc` reader for PID/UID/generation, ancestry,
@@ -160,52 +157,52 @@ and the same selected environment fields. OS buffers are evaluated only in memor
 argv and other environment values are never emitted or stored. Unsupported platforms
 and restricted process visibility remain explicitly unavailable.
 
-Die Prozessgeneration muss vor der Lock-mtime begonnen haben; Lock-Inode,
-Zeitstempel, Inhalt, Owner-Prozess und dessen eigene injizierte Identität werden
-wiederholt verglichen. Fehlende/doppelte Identitätsfelder, symlinkende Locks,
-ungültige PID und unlesbare Daten verweigern die Bindung. Herdr lässt beim
-Default-Owner `HERDR_SESSION` weg: nur dessen kanonischer Default-Socket erlaubt
-hier die explizite Route `default`; danach müssen die bekannten beidseitigen
-JSON-null-/Socket-/Kompatibilitätsprüfungen bestehen. Keine Umgebungsvariable des
-Dashboards und kein Label bestimmt den Kandidaten.
+The process generation must have started before the lock mtime; lock inode,
+timestamps, content, owner process, and that process's own injected identity are
+compared repeatedly. Missing/duplicate identity fields, symlink locks, invalid
+PID, and unreadable data refuse the binding. For the default owner Herdr omits
+`HERDR_SESSION`: only that owner's canonical default socket allows the explicit
+`default` route here; after that the known bilateral JSON-null/socket/compatibility
+checks must pass. No dashboard environment variable and no label selects the
+candidate.
 
-`Source.primary` verbindet diesen Kandidaten mit exakten nativen Session-, Pane-,
-Agent- und Prozessinformationen. Pane und Agent müssen dieselbe physische
-Workspace-/Tab-/Terminal-Identität liefern. Die Lock-PID muss über höchstens 24
-aktuelle Elternschritte die von genau diesem Pane gemeldete Shell erreichen;
-die Generationen der Kette werden nochmals geprüft. Das schließt eine fremde
-Pane trotz gültiger Registrierung sowie restaurierte öffentliche IDs ohne den
-alten Owner aus. Nach der OS-Prüfung wird die physische Pane-Bindung erneut gelesen.
+`Source.primary` joins this candidate with exact native session, pane, agent, and
+process information. Pane and agent must supply the same physical
+workspace/tab/terminal identity. The lock PID must reach the shell reported by
+exactly this pane in at most 24 current parent steps; the generations of the
+chain are checked again. That excludes a foreign pane despite a valid
+registration, and restored public IDs without the old owner. After the OS check
+the physical pane binding is read again.
 
-Die Auswahl bindet Home/Lock, PID/Startgeneration, injizierten Endpunkt, Provider
-und physische IDs. Ein Owner-Wechsel retargetiert keine bestehende Auswahl.
-`Source.primary_target` prüft ausschließlich diesen Owner/Endpunkt neu; es löst
-auf Enter keinen Fleet-Snapshot und keine Worker-Abfragen aus. Agent-/Tab-Fokus
-verwenden den gemeinsamen bestehenden Navigationspfad mit erneuten Zielprüfungen
-vor der zweiten Mutation und bei der Abschlussbestätigung.
+Selection binds home/lock, PID/start generation, injected endpoint, provider,
+and physical IDs. An owner change does not retarget an existing selection.
+`Source.primary_target` rechecks only this owner/endpoint; on Enter it does not
+issue a fleet snapshot or worker queries. Agent/tab focus use the shared
+existing navigation path with repeated target checks before the second mutation
+and at the completion confirmation.
 
-Die Reads sind nicht atomar. Zwischen zwei Messungen oder nach dem letzten Check
-können Prozess, Lock oder Pane wechseln. Lock-mtime ist ein konservativer
-Wiederverwendungscheck, keine vom Kernel signierte Besitzgeneration; Manipulationen
-durch denselben lokalen Benutzer oder veränderte Systemzeit sind keine zusätzliche
-Sicherheitsgrenze. Same-PID-exec verlangt weiterhin die aktuelle Harnessprüfung.
-Es gibt keinen neuen Dienst, kein gemeinsames Zustandsschema und keinen
-Fallback auf eine Namenssuche oder unbewiesene Linux-Prozessinterpretation.
+The reads are not atomic. Between two measurements or after the last check,
+process, lock, or pane can change. Lock mtime is a conservative reuse check,
+not a kernel-signed ownership generation; manipulation by the same local user
+or a changed system clock is not an extra security boundary. Same-PID exec
+still requires the current harness check.
+There is no new service, no shared state schema, and no fallback to a name
+search or unproven Linux process interpretation.
 
-## Abnahmepunkte
+## Acceptance points
 
-| Bereich | Nachweis |
+| Area | Evidence |
 | --- | --- |
-| Mapping, Completion/Idle-Trennung, Fehler/Stale | `tests/test_tshepherd.py` |
-| Logische Projektgruppierung, Zähler, Auswahlidentität | `tests/test_tshepherd.py` |
-| Fester Firstmate-Eintrag, eigene Zählergrenze, Owner-/Generations-/Frische-/Fehlerfälle | `tests/test_primary.py` |
-| Primärer Chat über reale Client-Tastatur; fremder Owner und Restart | `tests/herdr-lab.sh --primary-client` auf macOS |
-| Single-Flight-Fokus neben blockiertem Refresh, Ziel-Metadaten, Budget, Abbruch, sichere argv | `tests/test_tshepherd.py` |
-| Rendering, schmale Fenster, Resize, Eingabe während Fetch | `tests/test_terminal.py` und Renderingtests |
-| Echo, Canonical, Signals, Cursor/Altscreen, anschließende Shell | echte PTY-Tests in `tests/test_terminal.py` |
-| Tatsächlicher Herdr-Fokus, echte TUI und sichtbarer Client-Wechsel im Lab | [Isolierter Live-Test und Client-Variante](verification.md#isolierter-herdr-live-test) |
+| Mapping, completion/idle split, errors/stale | `tests/test_tshepherd.py` |
+| Logical project grouping, counters, selection identity | `tests/test_tshepherd.py` |
+| Fixed Firstmate row, own counter boundary, owner/generation/freshness/error cases | `tests/test_primary.py` |
+| Primary chat via a real client keyboard; foreign owner and restart | `tests/herdr-lab.sh --primary-client` on macOS |
+| Single-flight focus beside a blocked refresh, target metadata, budget, cancel, safe argv | `tests/test_tshepherd.py` |
+| Rendering, narrow windows, resize, input during fetch | `tests/test_terminal.py` and rendering tests |
+| Echo, canonical, signals, cursor/altscreen, subsequent shell | real PTY tests in `tests/test_terminal.py` |
+| Actual Herdr focus, real TUI, and visible client switch in the lab | [Isolated live test and client variant](verification.md#isolated-herdr-live-test) |
 
-Eine Mockbestätigung darf nicht als reale Herdr-Fokusbestätigung ausgegeben werden.
-Der Live-Test benutzt für jeden Herdr-Befehl den benannten nicht-default Lab-Helper,
-auch für Provisioning, Viewer und Teardown. Die Default-Flotte und fremde Projekte
-sind keine Testziele.
+A mock confirmation must not be presented as a real Herdr focus confirmation.
+The live test uses the named non-default lab helper for every Herdr command,
+including provisioning, viewer, and teardown. The default fleet and foreign
+projects are not test targets.
