@@ -326,13 +326,22 @@ def session_selection(environment, expected_cwd="", process_start=0, harness="")
             born = file_birth_ns(entry.path)
             if born is None:
                 return {"model": "", "effort": ""}
-            if born + 2 * 10**9 >= process_start:
-                candidates.append(Path(entry.path))
+            candidates.append((Path(entry.path), born, info.st_mtime_ns))
         except OSError:
             return {"model": "", "effort": ""}
-    if len(candidates) != 1:
+    in_generation = [path for path, born, _mtime in candidates
+                     if born + 2 * 10**9 >= process_start]
+    if len(in_generation) == 1:
+        return read_session_selection(in_generation[0], expected_cwd=expected_cwd)
+    if len(in_generation) > 1:
         return {"model": "", "effort": ""}
-    return read_session_selection(candidates[0], expected_cwd=expected_cwd)
+    # A unique worktree session may predate this process (resume/rewrite).
+    # Birth time still disambiguates extra files; mtime is not a second birth.
+    rewritten = [path for path, _born, mtime in candidates
+                 if mtime + 2 * 10**9 >= process_start]
+    if len(rewritten) != 1:
+        return {"model": "", "effort": ""}
+    return read_session_selection(rewritten[0], expected_cwd=expected_cwd)
 
 
 def observe_runtime(pid, expected_cwd="", harness="", os_reader=None):
