@@ -3,7 +3,8 @@
 Firstmate's fm-session-lock-lib.sh owns harness classification and the PID lock.
 Darwin proc_pidinfo and Linux /proc supply generation/ancestry; KERN_PROCARGS2
 or /proc/<pid>/environ supplies only selected identity fields. A caller-supplied
-exact Pi process may read one process-generation-unique structured session file.
+exact Pi process may read one structured session file unique for that
+process generation.
 Never enumerate processes or emit argv/env. Unsupported/restricted evidence
 remains unavailable.
 """
@@ -299,7 +300,7 @@ def read_session_selection(path, session_id="", expected_cwd=""):
 
 
 def session_selection(environment, expected_cwd="", process_start=0, harness=""):
-    """Use an exact Pi session path, or one generation-unique default session."""
+    """Use an exact Pi session path, or one worktree session unique for this process generation."""
     path_value = environment.get("PI_SESSION_FILE")
     session_id = environment.get("PI_SESSION_ID")
     if path_value and session_id:

@@ -105,12 +105,12 @@ vertically beside the branding; project groups have their own colors and
 indented single-line workers. Agent, model, live, task, task time, and latest
 activity sit on fixed cell columns. For Pi, the model cell reads only a session
 file that is unique for the confirmed process generation of the exact worktree
-and follows that file's active entry chain. When several session files exist,
-generation uniqueness uses filesystem birth time (Darwin `st_birthtime`, Linux
-`statx` `STATX_BTIME`), never `ctime`, which advances when a file is written. A
+and follows that file's active entry chain. A single file born in that
+generation wins (Darwin `st_birthtime`, Linux `statx` `STATX_BTIME`; never
+`ctime`, which advances when a file is written). If none were born then, a
 unique worktree session whose birth predates that generation but whose content
-was written during it (resume/rewrite) remains that file; extra in-generation
-births stay unknown.
+was written during it (resume/rewrite) remains that file. Extra in-generation
+births or extra rewrites stay unknown.
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.
