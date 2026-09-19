@@ -94,9 +94,9 @@ Astra, Terra, Sol, Luna, Grok, and Claude names use fixed labels, in that priori
 order when several match. Other non-empty runtime model IDs get a label of at
 most six characters derived from their model-ID component; no manual mapping
 is needed. `?` marks an empty or unconfirmed model, or missing or unrecognized
-thinking effort. Pi sessions are read only when one
-session file is generation-unique for the exact verified process and worktree;
-ambiguous sessions and other harnesses remain unknown. The wide table has one
+thinking effort. Which Pi session file counts as unique is defined in the
+[design document](docs/design.md#implementation); ambiguous sessions and other
+harnesses remain unknown. The wide table has one
 **Time** column for the current task; narrow rows show that compact duration
 in their detail line. Selecting a worker shows both **Session** and **Task** time
 in the footer, while selecting Firstmate shows only its session time. Durations

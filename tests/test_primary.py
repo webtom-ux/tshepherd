@@ -176,6 +176,40 @@ class OwnerReaderTests(unittest.TestCase):
                 self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
                                  {'model': '', 'effort': ''})
 
+    def test_unique_rewritten_session_predating_generation_still_reads(self):
+        Path(self.home / 'worktree').mkdir()
+        cwd = str((self.home / 'worktree').resolve())
+        directory = self.home / '.pi/agent/sessions' / ('--' + cwd.strip('/').replace('/', '-') + '--')
+        directory.mkdir(parents=True)
+
+        def write_session(name, model_id):
+            path = directory / name
+            path.write_text('\n'.join([
+                json.dumps({'type': 'session', 'id': name, 'cwd': cwd}),
+                json.dumps({'type': 'model_change', 'id': 'm1', 'parentId': None,
+                            'provider': 'xai', 'modelId': model_id}),
+                json.dumps({'type': 'thinking_level_change', 'id': 'e1', 'parentId': 'm1',
+                            'thinkingLevel': 'medium'}), '']))
+            return path
+
+        resumed = write_session('resumed.jsonl', 'grok-4.6')
+        process_start = 4 * 10**9
+        births = {str(resumed): 1_000}
+        os.utime(resumed, ns=(6 * 10**9, 6 * 10**9))
+        with patch.object(owner_api.Path, 'home', return_value=self.home):
+            with patch.object(owner_api, 'file_birth_ns', side_effect=lambda path: births[str(path)]):
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': 'xai/grok-4.6', 'effort': 'medium'})
+                os.utime(resumed, ns=(1_000, 1_000))
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': '', 'effort': ''})
+                os.utime(resumed, ns=(6 * 10**9, 6 * 10**9))
+                extra = write_session('extra.jsonl', 'grok-other')
+                births[str(extra)] = 2_000
+                os.utime(extra, ns=(7 * 10**9, 7 * 10**9))
+                self.assertEqual(owner_api.session_selection({}, cwd, process_start, 'pi'),
+                                 {'model': '', 'effort': ''})
+
     def test_runtime_reader_rechecks_exact_process_and_hides_session_path(self):
         session = self.home / 'session.jsonl'
         session.write_text('\n'.join([
