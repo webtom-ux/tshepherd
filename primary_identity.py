@@ -3,7 +3,8 @@
 Firstmate's fm-session-lock-lib.sh owns harness classification and the PID lock.
 Darwin proc_pidinfo and Linux /proc supply generation/ancestry; KERN_PROCARGS2
 or /proc/<pid>/environ supplies only selected identity fields. A caller-supplied
-exact Pi process may read one process-generation-unique structured session file.
+exact Pi process may read one structured session file unique for that
+process generation.
 Never enumerate processes or emit argv/env. Unsupported/restricted evidence
 remains unavailable.
 """
@@ -299,7 +300,7 @@ def read_session_selection(path, session_id="", expected_cwd=""):
 
 
 def session_selection(environment, expected_cwd="", process_start=0, harness=""):
-    """Use an exact Pi session path, or one generation-unique default session."""
+    """Use an exact Pi session path, or one worktree session unique for this process generation."""
     path_value = environment.get("PI_SESSION_FILE")
     session_id = environment.get("PI_SESSION_ID")
     if path_value and session_id:
@@ -326,13 +327,22 @@ def session_selection(environment, expected_cwd="", process_start=0, harness="")
             born = file_birth_ns(entry.path)
             if born is None:
                 return {"model": "", "effort": ""}
-            if born + 2 * 10**9 >= process_start:
-                candidates.append(Path(entry.path))
+            candidates.append((Path(entry.path), born, info.st_mtime_ns))
         except OSError:
             return {"model": "", "effort": ""}
-    if len(candidates) != 1:
+    in_generation = [path for path, born, _mtime in candidates
+                     if born + 2 * 10**9 >= process_start]
+    if len(in_generation) == 1:
+        return read_session_selection(in_generation[0], expected_cwd=expected_cwd)
+    if len(in_generation) > 1:
         return {"model": "", "effort": ""}
-    return read_session_selection(candidates[0], expected_cwd=expected_cwd)
+    # A unique worktree session may predate this process (resume/rewrite).
+    # Birth time still disambiguates extra files; mtime is not a second birth.
+    rewritten = [path for path, _born, mtime in candidates
+                 if mtime + 2 * 10**9 >= process_start]
+    if len(rewritten) != 1:
+        return {"model": "", "effort": ""}
+    return read_session_selection(rewritten[0], expected_cwd=expected_cwd)
 
 
 def observe_runtime(pid, expected_cwd="", harness="", os_reader=None):
