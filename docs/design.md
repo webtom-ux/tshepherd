@@ -104,13 +104,19 @@ the task axis and overlaps with live states. Colored number blocks sit
 vertically beside the branding; project groups have their own colors and
 indented single-line workers. Agent, model, live, task, task time, and latest
 activity sit on fixed cell columns. For Pi, the model cell reads only a session
-file that is unique for the confirmed process generation of the exact worktree
-and follows that file's active entry chain. A single file born in that
-generation wins (Darwin `st_birthtime`, Linux `statx` `STATX_BTIME`; never
-`ctime`, which advances when a file is written). If none were born then, a
-unique worktree session whose birth predates that generation but whose content
-was written during it (resume/rewrite) remains that file. Extra in-generation
-births or extra rewrites stay unknown.
+file bound to the confirmed process in the exact worktree and follows that
+file's active entry chain. An exact `PI_SESSION_FILE` takes precedence and does
+not require `PI_SESSION_ID`; when both are supplied, the header ID must match.
+Without a path, an injected `PI_SESSION_ID` must match exactly one owned session
+header for that worktree, so unrelated recently written sibling sessions do not
+create ambiguity. Invalid explicit paths and unmatched or ambiguous IDs stay
+unknown without falling back to generation-based selection. With neither path
+nor ID, a single file born in the process generation wins (Darwin
+`st_birthtime`, Linux `statx` `STATX_BTIME`; never `ctime`, which advances when
+a file is written). If none were born then, a unique worktree session whose
+birth predates that generation but whose content was written during it
+(resume/rewrite) remains that file. Multiple matching IDs, extra in-generation
+births, or extra rewrites stay unknown.
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.

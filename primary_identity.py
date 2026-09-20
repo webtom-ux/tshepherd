@@ -3,8 +3,8 @@
 Firstmate's fm-session-lock-lib.sh owns harness classification and the PID lock.
 Darwin proc_pidinfo and Linux /proc supply generation/ancestry; KERN_PROCARGS2
 or /proc/<pid>/environ supplies only selected identity fields. A caller-supplied
-exact Pi process may read one structured session file unique for that
-process generation.
+exact Pi process may read its path- or ID-bound structured session file, with
+process-generation uniqueness only as a fallback.
 Never enumerate processes or emit argv/env. Unsupported/restricted evidence
 remains unavailable.
 """
@@ -231,6 +231,40 @@ def system_reader():
     raise ValueError("Firstmate identity is unsupported on this operating system")
 
 
+def session_header_matches(path, session_id, expected_cwd):
+    """Confirm one stable, owned Pi session header without reading its transcript."""
+    path = Path(path)
+    if not path.is_absolute():
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_size > MAX_SESSION_BYTES):
+            return False
+        raw = os.read(fd, MAX_SESSION_LINE + 1)
+        line = raw.split(b"\n", 1)[0]
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
+        if (len(line) > MAX_SESSION_LINE or stamp(before) != stamp(after)
+                or stamp(after) != stamp(current)):
+            return False
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    try:
+        header = json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return (isinstance(header, dict) and header.get("type") == "session"
+            and header.get("id") == session_id and header.get("cwd") == expected_cwd)
+
+
 def read_session_selection(path, session_id="", expected_cwd=""):
     """Read one bounded Pi session file and follow only its active ancestry."""
     path = Path(path)
@@ -300,11 +334,11 @@ def read_session_selection(path, session_id="", expected_cwd=""):
 
 
 def session_selection(environment, expected_cwd="", process_start=0, harness=""):
-    """Use an exact Pi session path, or one worktree session unique for this process generation."""
+    """Use a process-bound Pi session, or a generation-unique worktree fallback."""
     path_value = environment.get("PI_SESSION_FILE")
     session_id = environment.get("PI_SESSION_ID")
-    if path_value and session_id:
-        return read_session_selection(path_value, session_id, expected_cwd)
+    if path_value:
+        return read_session_selection(path_value, session_id or "", expected_cwd)
     if harness not in {"pi", "pi-signed"} or not expected_cwd or not process_start:
         return {"model": "", "effort": ""}
     cwd = Path(expected_cwd)
@@ -324,12 +358,22 @@ def session_selection(environment, expected_cwd="", process_start=0, harness="")
             if not (entry.name.endswith(".jsonl") and entry.is_file(follow_symlinks=False)
                     and info.st_uid == os.getuid()):
                 continue
-            born = file_birth_ns(entry.path)
-            if born is None:
-                return {"model": "", "effort": ""}
-            candidates.append((Path(entry.path), born, info.st_mtime_ns))
+            candidates.append((Path(entry.path), info.st_mtime_ns))
         except OSError:
             return {"model": "", "effort": ""}
+    if session_id:
+        matched = [path for path, _mtime in candidates
+                   if session_header_matches(path, session_id, expected_cwd)]
+        if len(matched) == 1:
+            return read_session_selection(matched[0], session_id, expected_cwd)
+        return {"model": "", "effort": ""}
+    generated = []
+    for path, mtime in candidates:
+        born = file_birth_ns(path)
+        if born is None:
+            return {"model": "", "effort": ""}
+        generated.append((path, born, mtime))
+    candidates = generated
     in_generation = [path for path, born, _mtime in candidates
                      if born + 2 * 10**9 >= process_start]
     if len(in_generation) == 1:
