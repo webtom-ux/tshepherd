@@ -23,12 +23,16 @@ import unicodedata
 from i18n import set_language, tr
 
 SCHEMA = "fm-fleet-snapshot.v1"
-PRIMARY_RUNTIME_SCHEMA = "firstmate-primary-runtime.v1"
-PRIMARY_RUNTIME_KEYS = frozenset((
-    "schema", "generation", "harness", "owner_pid", "owner_incarnation", "lock_id",
-    "session_id", "session_file", "provider", "model", "effort",
+PI_SESSION_BYTES = 16 * 1024 * 1024
+PI_SESSION_LINE_BYTES = 4 * 1024 * 1024
+PI_SESSION_ENTRIES = 4096
+PI_SESSION_TEXT = 512
+PI_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
+AGENT_SESSION_KEYS = frozenset(("agent", "source", "kind", "value"))
+PI_STRUCTURAL_KEYS = frozenset((
+    "type", "version", "id", "cwd", "parentId", "provider", "modelId",
+    "thinkingLevel", "message", "role", "model",
 ))
-PRIMARY_RUNTIME_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
 ACTIVE_OUTCOMES = {"working", "parked", "blocked", "paused"}
@@ -175,35 +179,168 @@ def identity(task):
             task.get("endpoint", {}).get("target"), task.get("harness"))
 
 
-def validate_primary_runtime(data):
-    """Defensively accept only the public current-primary runtime record."""
-    def bounded_string(key, limit):
-        value = data.get(key)
-        return (isinstance(value, str) and 0 < len(value) <= limit
-                and "\n" not in value and "\r" not in value)
+def _bounded_session_text(value, limit=PI_SESSION_TEXT):
+    return (isinstance(value, str) and 0 < len(value) <= limit
+            and value == value.strip() and all(char.isprintable() for char in value))
 
-    if not isinstance(data, dict) or set(data) != PRIMARY_RUNTIME_KEYS:
-        raise ValueError(tr("Primär-Runtime-Schema ungültig"))
-    if data.get("schema") != PRIMARY_RUNTIME_SCHEMA:
-        raise ValueError(tr("Primär-Runtime-Schema unbekannt"))
-    owner_pid = data.get("owner_pid")
-    session_file = data.get("session_file")
-    if (not bounded_string("generation", 128)
-            or data.get("harness") not in ("pi", "pi-signed")
-            or not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid < 2
-            or not bounded_string("owner_incarnation", 128)
-            or re.fullmatch(r"[0-9a-f-]{36}:[0-9]+(?::[0-9]+)?", data["owner_incarnation"]) is None
-            or not bounded_string("lock_id", 128)
-            or re.fullmatch(r"[0-9]+:[0-9]+", data["lock_id"]) is None
-            or not bounded_string("session_id", 512)
-            or (session_file is not None
-                and (not isinstance(session_file, str) or not 0 < len(session_file) <= 4096
-                     or not Path(session_file).is_absolute() or "\n" in session_file or "\r" in session_file))
-            or not bounded_string("provider", 512)
-            or not bounded_string("model", 512)
-            or data.get("effort") not in PRIMARY_RUNTIME_EFFORTS):
-        raise ValueError(tr("Primär-Runtime-Felder ungültig"))
-    return dict(data, model=data["provider"] + "/" + data["model"])
+
+def agent_session_path(value):
+    """Accept only Herdr's exact typed Pi path reference."""
+    if (not isinstance(value, dict) or set(value) != AGENT_SESSION_KEYS
+            or value.get("agent") != "pi" or value.get("source") != "herdr:pi"
+            or value.get("kind") != "path"):
+        raise ValueError(tr("Pi-Sitzungsreferenz nicht bestätigt"))
+    path = value.get("value")
+    if (not isinstance(path, str) or not 0 < len(path) <= 4096
+            or not Path(path).is_absolute()
+            or any(char in path for char in ("\0", "\n", "\r"))):
+        raise ValueError(tr("Pi-Sitzungspfad ungültig"))
+    return path
+
+
+def _file_stamp(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _project_session_json_object(pairs):
+    """Discard every non-runtime field as each JSON object is constructed."""
+    value, seen = {}, set()
+    for key, item in pairs:
+        if key in seen:
+            raise ValueError(tr("Pi-Sitzungsdatei enthält doppelte JSON-Felder"))
+        seen.add(key)
+        if key in PI_STRUCTURAL_KEYS:
+            value[key] = item
+    return value
+
+
+def _reject_json_constant(_value):
+    raise ValueError(tr("Pi-Sitzungsdatei enthält ungültige JSON-Werte"))
+
+
+def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
+    """Project runtime settings from one exact, stable Pi v3 JSONL descriptor.
+
+    Transcript-bearing objects exist only for the duration of parsing one line.
+    The retained graph contains structural links and runtime settings only.
+    """
+    if (not isinstance(path, str) or not Path(path).is_absolute()
+            or not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()):
+        raise ValueError(tr("Pi-Sitzungsbindung ungültig"))
+    flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or not 0 < before.st_size <= PI_SESSION_BYTES):
+            raise ValueError(tr("Pi-Sitzungsdatei nicht bestätigt"))
+        graph = {}
+        tail = None
+        total = 0
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            for number in range(PI_SESSION_ENTRIES + 2):
+                raw = handle.readline(PI_SESSION_LINE_BYTES + 1)
+                if not raw:
+                    break
+                total += len(raw)
+                if (len(raw) > PI_SESSION_LINE_BYTES or total > PI_SESSION_BYTES
+                        or number > PI_SESSION_ENTRIES):
+                    raise ValueError(tr("Pi-Sitzungsdatei überschreitet Grenzen"))
+                try:
+                    value = json.loads(raw, object_pairs_hook=_project_session_json_object,
+                                       parse_constant=_reject_json_constant)
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    raw = b""
+                    raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft")) from None
+                raw = b""  # Do not retain a transcript-bearing input line.
+                if not isinstance(value, dict):
+                    raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
+                if number == 0:
+                    if (value.get("type") != "session" or value.get("version") != 3
+                            or isinstance(value.get("version"), bool)
+                            or not _bounded_session_text(value.get("id"))
+                            or value.get("cwd") != expected_cwd):
+                        raise ValueError(tr("Pi-Sitzungskopf nicht bestätigt"))
+                    continue
+                entry_id, parent_id, entry_type = (value.get("id"), value.get("parentId"),
+                                                   value.get("type"))
+                if ("parentId" not in value
+                        or not _bounded_session_text(entry_id)
+                        or (parent_id is not None and not _bounded_session_text(parent_id))
+                        or not _bounded_session_text(entry_type, 64)
+                        or entry_id in graph):
+                    raise ValueError(tr("Pi-Sitzungsstruktur ungültig"))
+                provider = model = effort = ""
+                if entry_type == "model_change":
+                    provider, model = value.get("provider"), value.get("modelId")
+                    if not _bounded_session_text(provider) or not _bounded_session_text(model):
+                        raise ValueError(tr("Pi-Modellwert ungültig"))
+                elif entry_type == "thinking_level_change":
+                    effort = value.get("thinkingLevel")
+                    if effort not in PI_EFFORTS:
+                        raise ValueError(tr("Pi-Denkstufe ungültig"))
+                elif entry_type == "message":
+                    message = value.get("message")
+                    if not isinstance(message, dict) or not _bounded_session_text(message.get("role"), 64):
+                        raise ValueError(tr("Pi-Nachrichtenstruktur ungültig"))
+                    if message["role"] == "assistant":
+                        provider, model = message.get("provider"), message.get("model")
+                        if not _bounded_session_text(provider) or not _bounded_session_text(model):
+                            raise ValueError(tr("Pi-Assistentenmodell ungültig"))
+                # Do not retain value/message: they may contain prompts, tools or summaries.
+                graph[entry_id] = (parent_id, entry_type, provider, model, effort)
+                tail = entry_id
+        parsed = os.fstat(fd)
+        if total != before.st_size or _file_stamp(before) != _file_stamp(parsed):
+            raise ValueError(tr("Pi-Sitzungsdatei während Lesen geändert"))
+        if tail is None:
+            raise ValueError(tr("Pi-Sitzung enthält keine persistierte Laufzeit"))
+
+        # Validate the complete forest, not only the selected tail: corrupt or
+        # ambiguous structural input is never partially trusted.
+        colors = {}
+        for entry_id in graph:
+            trail = []
+            current = entry_id
+            while current is not None and colors.get(current) != 2:
+                if colors.get(current) == 1:
+                    raise ValueError(tr("Pi-Sitzungszyklus"))
+                if current not in graph:
+                    raise ValueError(tr("Verwaister Pi-Sitzungseintrag"))
+                colors[current] = 1
+                trail.append(current)
+                current = graph[current][0]
+            for item in trail:
+                colors[item] = 2
+
+        chain = []
+        current = tail
+        while current is not None:
+            chain.append(current)
+            current = graph[current][0]
+        model_value = ""
+        effort_value = "off"
+        for entry_id in reversed(chain):
+            _parent, entry_type, provider, model, effort = graph[entry_id]
+            if entry_type in ("model_change", "message") and provider and model:
+                model_value = provider + "/" + model
+            if entry_type == "thinking_level_change":
+                effort_value = effort
+        if not model_value or effort_value not in PI_EFFORTS:
+            raise ValueError(tr("Pi-Laufzeit nicht vollständig persistiert"))
+
+        # Keep the descriptor open while its external pane/owner binding is
+        # revalidated, then reject append and pathname replacement races.
+        revalidate()
+        final = os.fstat(fd)
+        current_info = os.stat(path, follow_symlinks=False)
+        if (_file_stamp(before) != _file_stamp(final)
+                or _file_stamp(final) != _file_stamp(current_info)):
+            raise ValueError(tr("Pi-Sitzungsdatei während Prüfung ersetzt"))
+        return {"model": model_value, "effort": effort_value}
+    finally:
+        os.close(fd)
 
 
 def validate_snapshot(data, home):
@@ -495,21 +632,6 @@ class Source:
             sys.executable, str(Path(__file__).with_name("primary_identity.py")),
             "--runtime", str(pid), cwd, harness], min(3, remaining))
 
-    def primary_runtime(self, deadline):
-        """Consume Firstmate's verified public runtime verdict without another fallback."""
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(tr("Firstmate-Messbudget verbraucht"))
-        env = os.environ.copy()
-        for key in list(env):
-            if key.startswith("FM_"):
-                del env[key]
-        env.update(FM_HOME=self.config.home, FM_ROOT_OVERRIDE=self.config.root)
-        data = self.runner.run([
-            str(Path(self.config.root) / "bin/fm-primary-runtime.sh"), "read"
-        ], min(3, remaining), env)
-        return validate_primary_runtime(data)
-
     def runtime_selection(self, task, foreground, session, pane, found, socket, deadline):
         """Read only exact pane PIDs and accept an environment bound to this task."""
         matches = []
@@ -670,13 +792,41 @@ class Source:
             runtime = {}
             if include_runtime:
                 try:
-                    runtime = self.primary_runtime(deadline)
-                    if (runtime["owner_pid"] != owner["process"]["pid"]
-                            or runtime["lock_id"] != ":".join(str(value) for value in owner["lock"][:2])):
-                        raise ValueError("Primary runtime owner mismatch")
+                    owner_pid = owner["process"]["pid"]
+                    exact_processes = [item for item in foreground
+                                       if isinstance(item, dict) and item.get("pid") == owner_pid
+                                       and isinstance(item.get("cwd"), str)
+                                       and Path(item["cwd"]).is_absolute()]
+                    if len(exact_processes) != 1 or agent.get("agent") != "pi":
+                        raise ValueError(tr("Pi-Owner-Prozess nicht eindeutig bestätigt"))
+                    reference = found.get("agent_session")
+                    path = agent_session_path(reference)
+                    if agent.get("agent_session") != reference:
+                        raise ValueError(tr("Pi-Sitzungsreferenz widersprüchlich"))
+
+                    def revalidate_runtime_binding():
+                        latest_info = call("pane", "get", pane).get("result", {})
+                        latest_agent_info = call("agent", "get", pane).get("result", {})
+                        latest_found = latest_info.get("pane", {})
+                        latest_agent = latest_agent_info.get("agent", {})
+                        if (latest_info.get("type") != "pane_info"
+                                or latest_agent_info.get("type") != "agent_info"
+                                or latest_found.get("pane_id") != pane
+                                or latest_agent.get("pane_id") != pane
+                                or latest_agent.get("agent") != "pi"
+                                or tuple(latest_found.get(k) for k in ("workspace_id", "tab_id", "terminal_id")) != physical
+                                or tuple(latest_agent.get(k) for k in ("workspace_id", "tab_id", "terminal_id")) != physical
+                                or latest_found.get("agent_session") != reference
+                                or latest_agent.get("agent_session") != reference
+                                or agent_session_path(reference) != path
+                                or run(reader + [str(shell)]) != owner):
+                            raise ValueError(tr("Pi-Sitzungsbindung während Prüfung geändert"))
+
+                    runtime = read_pi_session_runtime(
+                        path, exact_processes[0]["cwd"], revalidate_runtime_binding)
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
-                    # The producer's failed read verdict is explicit unavailable.
-                    # Never recover it from owner environment or session directories.
+                    # A lazy, ephemeral, malformed or racing persisted session is
+                    # display-only unavailable. Never search siblings or use defaults.
                     runtime = {}
                 if run(reader + [str(shell)]) != owner:
                     raise ValueError(tr("Owner/Abstammung während Prüfung geändert oder unbestätigt"))
