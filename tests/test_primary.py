@@ -463,6 +463,11 @@ class PersistedPiSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.read_pi_session_runtime(str(fifo), self.cwd)
 
+    def test_runtime_read_obeys_its_display_only_deadline(self):
+        write_pi_session(self.path, self.cwd)
+        with patch.object(app.time, 'monotonic', return_value=10), self.assertRaises(TimeoutError):
+            app.read_pi_session_runtime(str(self.path), self.cwd, deadline=10)
+
     def test_growth_and_path_replacement_during_binding_revalidation_are_rejected(self):
         write_pi_session(self.path, self.cwd)
         def grow():
@@ -574,6 +579,26 @@ class PrimaryTests(unittest.TestCase):
         self.assertIn('ready for input', done.reason)
         self.assertTrue(done.physical)
         self.assertIn('confirmed', self.source.focus(done.key))
+
+    def test_runtime_budget_exhaustion_preserves_confirmed_primary(self):
+        # The live 7.1 MiB session made display parsing the first new work after
+        # the physical proof. Exhaustion used to consume the shared deadline,
+        # so the final owner check returned the startup/stale placeholder.
+        clock = [100.0]
+        def monotonic():
+            return clock[0]
+        def exhaust_runtime(*args):
+            # Before the reserved runtime deadline existed, the parser received
+            # only three arguments and could consume the entire primary budget.
+            clock[0] = args[3] if len(args) == 4 else 112.0
+            raise TimeoutError('display-only runtime budget')
+        with patch.object(app.time, 'monotonic', side_effect=monotonic), \
+                patch.object(app, 'read_pi_session_runtime', side_effect=exhaust_runtime):
+            primary = self.source.primary(112.0)
+        self.assertTrue(primary.physical, primary.reason)
+        self.assertEqual(primary.live, 'idle')
+        self.assertEqual((primary.model, primary.effort), ('', ''))
+        self.assertEqual(app.compact_model(primary.model, primary.effort), '?·?')
 
     def test_lazy_absent_ephemeral_non_pi_and_unavailable_script_stay_unknown(self):
         self.runner.agent_session['value'] = str(Path(self.temp.name) / 'lazy.jsonl')

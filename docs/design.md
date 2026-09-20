@@ -210,11 +210,13 @@ identity update the model, while thinking starts at Pi's effective `off` and is
 updated by thinking changes.
 
 The file descriptor and pathname stamps, complete pane/agent session binding,
-and owner lock/process/ancestry are rechecked after parsing. Append,
-replacement, pane, terminal, reference, owner, or restart races discard the
-runtime observation. Missing lazy files and ephemeral Pi sessions deliberately
-show `?·?`; there is no fallback to siblings, names, times, process searches,
-default settings, launch metadata, transcript text, or remembered values. This
+and owner lock/process/ancestry are rechecked after parsing. Display-only parsing
+has its own deadline and reserves the final primary owner/lock check; exhausting
+that parsing budget discards only the runtime tuple, not the already confirmed
+row. Append, replacement, pane, terminal, reference, owner, or restart races
+discard the runtime observation. Missing lazy files and ephemeral Pi sessions
+deliberately show `?·?`; there is no fallback to siblings, names, times, process
+searches, default settings, launch metadata, transcript text, or remembered values. This
 display-only read remains outside `primary_target()` and every Enter/focus path,
 so it is not part of selection identity or focus latency. The configured
 Firstmate installation remains compatible when no runtime helper script exists.

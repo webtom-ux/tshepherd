@@ -27,6 +27,7 @@ PI_SESSION_BYTES = 16 * 1024 * 1024
 PI_SESSION_LINE_BYTES = 4 * 1024 * 1024
 PI_SESSION_ENTRIES = 4096
 PI_SESSION_TEXT = 512
+PRIMARY_RUNTIME_RESERVE = 3.1
 PI_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
 AGENT_SESSION_KEYS = frozenset(("agent", "source", "kind", "value"))
 PI_STRUCTURAL_KEYS = frozenset((
@@ -218,15 +219,24 @@ def _reject_json_constant(_value):
     raise ValueError(tr("Pi-Sitzungsdatei enthält ungültige JSON-Werte"))
 
 
-def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
+def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadline=None):
     """Project runtime settings from one exact, stable Pi v3 JSONL descriptor.
 
     Transcript-bearing objects exist only for the duration of parsing one line.
     The retained graph contains structural links and runtime settings only.
     """
     if (not isinstance(path, str) or not Path(path).is_absolute()
-            or not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()):
+            or not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()
+            or (deadline is not None and (not isinstance(deadline, (int, float))
+                                          or isinstance(deadline, bool)
+                                          or not math.isfinite(deadline)))):
         raise ValueError(tr("Pi-Sitzungsbindung ungültig"))
+
+    def check_deadline():
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(tr("Pi-Sitzungsmessbudget verbraucht"))
+
+    check_deadline()
     flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
              | getattr(os, "O_NOFOLLOW", 0))
     fd = os.open(path, flags)
@@ -240,6 +250,7 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
         total = 0
         with os.fdopen(fd, "rb", closefd=False) as handle:
             for number in range(PI_SESSION_ENTRIES + 2):
+                check_deadline()
                 raw = handle.readline(PI_SESSION_LINE_BYTES + 1)
                 if not raw:
                     break
@@ -291,6 +302,7 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
                 # Do not retain value/message: they may contain prompts, tools or summaries.
                 graph[entry_id] = (parent_id, entry_type, provider, model, effort)
                 tail = entry_id
+        check_deadline()
         parsed = os.fstat(fd)
         if total != before.st_size or _file_stamp(before) != _file_stamp(parsed):
             raise ValueError(tr("Pi-Sitzungsdatei während Lesen geändert"))
@@ -301,6 +313,7 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
         # ambiguous structural input is never partially trusted.
         colors = {}
         for entry_id in graph:
+            check_deadline()
             trail = []
             current = entry_id
             while current is not None and colors.get(current) != 2:
@@ -322,6 +335,7 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
         model_value = ""
         effort_value = "off"
         for entry_id in reversed(chain):
+            check_deadline()
             _parent, entry_type, provider, model, effort = graph[entry_id]
             if entry_type in ("model_change", "message") and provider and model:
                 model_value = provider + "/" + model
@@ -332,7 +346,9 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None):
 
         # Keep the descriptor open while its external pane/owner binding is
         # revalidated, then reject append and pathname replacement races.
+        check_deadline()
         revalidate()
+        check_deadline()
         final = os.fstat(fd)
         current_info = os.stat(path, follow_symlinks=False)
         if (_file_stamp(before) != _file_stamp(final)
@@ -724,8 +740,8 @@ class Source:
     def primary(self, deadline, include_runtime=True):
         """Only the explicit home's current lock owner can supply a candidate."""
         try:
-            def run(argv):
-                remaining = deadline - time.monotonic()
+            def run(argv, until=deadline):
+                remaining = until - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(tr("Firstmate-Messbudget verbraucht"))
                 return self.runner.run(argv, min(3, remaining))
@@ -792,6 +808,11 @@ class Source:
             runtime = {}
             if include_runtime:
                 try:
+                    # Display-only parsing must leave enough of the primary
+                    # budget for the mandatory final owner/lock revalidation.
+                    runtime_deadline = deadline - PRIMARY_RUNTIME_RESERVE
+                    if time.monotonic() >= runtime_deadline:
+                        raise TimeoutError(tr("Pi-Sitzungsmessbudget verbraucht"))
                     owner_pid = owner["process"]["pid"]
                     exact_processes = [item for item in foreground
                                        if isinstance(item, dict) and item.get("pid") == owner_pid
@@ -804,9 +825,12 @@ class Source:
                     if agent.get("agent_session") != reference:
                         raise ValueError(tr("Pi-Sitzungsreferenz widersprüchlich"))
 
+                    def runtime_call(*args):
+                        return run(self.argv(session, *args), runtime_deadline)
+
                     def revalidate_runtime_binding():
-                        latest_info = call("pane", "get", pane).get("result", {})
-                        latest_agent_info = call("agent", "get", pane).get("result", {})
+                        latest_info = runtime_call("pane", "get", pane).get("result", {})
+                        latest_agent_info = runtime_call("agent", "get", pane).get("result", {})
                         latest_found = latest_info.get("pane", {})
                         latest_agent = latest_agent_info.get("agent", {})
                         if (latest_info.get("type") != "pane_info"
@@ -819,11 +843,12 @@ class Source:
                                 or latest_found.get("agent_session") != reference
                                 or latest_agent.get("agent_session") != reference
                                 or agent_session_path(reference) != path
-                                or run(reader + [str(shell)]) != owner):
+                                or run(reader + [str(shell)], runtime_deadline) != owner):
                             raise ValueError(tr("Pi-Sitzungsbindung während Prüfung geändert"))
 
                     runtime = read_pi_session_runtime(
-                        path, exact_processes[0]["cwd"], revalidate_runtime_binding)
+                        path, exact_processes[0]["cwd"], revalidate_runtime_binding,
+                        runtime_deadline)
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                     # A lazy, ephemeral, malformed or racing persisted session is
                     # display-only unavailable. Never search siblings or use defaults.
