@@ -16,7 +16,7 @@ import tempfile
 import termios
 import time
 
-from test_primary import PrimaryRunner
+from test_primary import PrimaryRunner, runtime_record
 from fixtures import sample_snapshot
 import tshepherd as app
 
@@ -35,7 +35,10 @@ class FixtureRunner(PrimaryRunner):
     def __init__(self, case):
         super().__init__()
         model, effort, _ = CASES[case]
-        self.owner['runtime'] = dict(model=model, effort=effort)
+        self.worker_runtime = dict(model=model, effort=effort)
+        if model:
+            provider, model_id = model.split('/', 1)
+            self.primary_runtime = runtime_record(provider, model_id, effort)
 
     def run(self, argv, timeout, env=None):
         if 'focus' in argv:
@@ -46,9 +49,10 @@ class FixtureRunner(PrimaryRunner):
             snapshot['tasks'][0]['endpoint']['target'] = 'named:w1:p1'
             snapshot['tasks'][0]['backlog']['title'] = 'Fixture worker'
             return snapshot
-        result = super().run(argv, timeout, env)
         if len(argv) > 2 and argv[2] == '--runtime':
-            result['environment'] = dict(self.owner['environment'], FM_TASK_ID='demo-0')
+            return dict(runtime=copy.deepcopy(self.worker_runtime),
+                        environment=dict(self.owner['environment'], FM_TASK_ID='demo-0'))
+        result = super().run(argv, timeout, env)
         return copy.deepcopy(result)
 
 
