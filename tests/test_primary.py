@@ -478,6 +478,44 @@ class PrimaryTests(unittest.TestCase):
         self.assertFalse(any(len(call) > 2 and call[2] == '--runtime'
                              for call in self.runner.calls))
 
+    def test_primary_runtime_rejects_foreign_pid_or_lock(self):
+        for change in ({'owner_pid': 654}, {'lock_id': '1:3'}):
+            with self.subTest(change=change):
+                self.runner.primary_runtime = dict(runtime_record(), **change)
+                primary = self.measured()
+                self.assertTrue(primary.physical)
+                self.assertEqual((primary.model, primary.effort), ('', ''))
+                self.assertEqual(primary.live, 'idle')
+
+    def test_restart_during_runtime_read_invalidates_primary(self):
+        original = copy.deepcopy(self.runner.owner)
+        run = self.runner.run
+        changes = (
+            lambda: self.runner.owner['process'].update(pid=654),
+            lambda: self.runner.owner['process'].update(start=11),
+            lambda: self.runner.owner['lock'].__setitem__(1, 3),
+            lambda: self.runner.owner['lock'].__setitem__(3, 12),
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                self.runner.owner = copy.deepcopy(original)
+                self.runner.primary_runtime = runtime_record()
+
+                def restart(argv, timeout, env=None):
+                    if Path(argv[0]).name == 'fm-primary-runtime.sh':
+                        change()
+                        self.runner.primary_runtime.update(
+                            owner_pid=self.runner.owner['process']['pid'],
+                            owner_incarnation='00000000-0000-0000-0000-000000000000:456',
+                            lock_id=':'.join(map(str, self.runner.owner['lock'][:2])))
+                    return run(argv, timeout, env)
+
+                self.runner.run = restart
+                primary = self.measured()
+                self.assertFalse(primary.physical)
+                self.assertEqual((primary.model, primary.effort), ('', ''))
+                self.assertEqual(primary.live, 'unknown')
+
     def test_primary_uses_fixed_and_generic_runtime_model_labels(self):
         cases = [
             ('x-ai/grok-4', 'Grok·H'),

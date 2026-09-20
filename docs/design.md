@@ -196,7 +196,13 @@ After that physical owner and endpoint are confirmed, model display for the
 primary row invokes the configured Firstmate root's public
 `bin/fm-primary-runtime.sh read` interface with the explicit home. Only a
 successful, defensively validated `firstmate-primary-runtime.v1` record supplies
-its provider/model/effort. A failed read, stale producer refusal, malformed
+its provider/model/effort. Its owner PID and lock device/inode must match the
+measured owner. After the runtime read, the identity reader reconfirms that
+exact owner, including process generation, full lock signature, environment,
+and shell ancestry; a restart invalidates the row. Firstmate owns the runtime
+incarnation verdict, while this surrounding identity check binds that verdict
+to the measured row without interpreting the producer's platform-specific
+incarnation encoding. A failed read, stale producer refusal, malformed
 record, or unknown schema leaves the compact label `?·?`; TShepherd does not
 recover by scanning session directories, timestamps, processes, transcripts,
 or launch defaults. Runtime display metadata is not part of selection identity,

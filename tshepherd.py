@@ -203,7 +203,7 @@ def validate_primary_runtime(data):
             or not bounded_string("model", 512)
             or data.get("effort") not in PRIMARY_RUNTIME_EFFORTS):
         raise ValueError(tr("Primär-Runtime-Felder ungültig"))
-    return {"model": data["provider"] + "/" + data["model"], "effort": data["effort"]}
+    return dict(data, model=data["provider"] + "/" + data["model"])
 
 
 def validate_snapshot(data, home):
@@ -671,10 +671,15 @@ class Source:
             if include_runtime:
                 try:
                     runtime = self.primary_runtime(deadline)
+                    if (runtime["owner_pid"] != owner["process"]["pid"]
+                            or runtime["lock_id"] != ":".join(str(value) for value in owner["lock"][:2])):
+                        raise ValueError("Primary runtime owner mismatch")
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                     # The producer's failed read verdict is explicit unavailable.
                     # Never recover it from owner environment or session directories.
                     runtime = {}
+                if run(reader + [str(shell)]) != owner:
+                    raise ValueError(tr("Owner/Abstammung während Prüfung geändert oder unbestätigt"))
             started = process_start(owner.get("process", {}).get("start"))
             return PrimaryRow(key, state, reason, time.time(),
                               agent["agent"], session, pane, physical,
