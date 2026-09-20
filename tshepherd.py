@@ -23,6 +23,12 @@ import unicodedata
 from i18n import set_language, tr
 
 SCHEMA = "fm-fleet-snapshot.v1"
+PRIMARY_RUNTIME_SCHEMA = "firstmate-primary-runtime.v1"
+PRIMARY_RUNTIME_KEYS = frozenset((
+    "schema", "generation", "harness", "owner_pid", "owner_incarnation", "lock_id",
+    "session_id", "session_file", "provider", "model", "effort",
+))
+PRIMARY_RUNTIME_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
 ACTIVE_OUTCOMES = {"working", "parked", "blocked", "paused"}
@@ -167,6 +173,37 @@ def session_confirmed(status, requested):
 def identity(task):
     return (task["id"], task.get("spawn_gen"), task.get("backend"),
             task.get("endpoint", {}).get("target"), task.get("harness"))
+
+
+def validate_primary_runtime(data):
+    """Defensively accept only the public current-primary runtime record."""
+    def bounded_string(key, limit):
+        value = data.get(key)
+        return (isinstance(value, str) and 0 < len(value) <= limit
+                and "\n" not in value and "\r" not in value)
+
+    if not isinstance(data, dict) or set(data) != PRIMARY_RUNTIME_KEYS:
+        raise ValueError(tr("Primär-Runtime-Schema ungültig"))
+    if data.get("schema") != PRIMARY_RUNTIME_SCHEMA:
+        raise ValueError(tr("Primär-Runtime-Schema unbekannt"))
+    owner_pid = data.get("owner_pid")
+    session_file = data.get("session_file")
+    if (not bounded_string("generation", 128)
+            or data.get("harness") not in ("pi", "pi-signed")
+            or not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid < 2
+            or not bounded_string("owner_incarnation", 128)
+            or re.fullmatch(r"[0-9a-f-]{36}:[0-9]+(?::[0-9]+)?", data["owner_incarnation"]) is None
+            or not bounded_string("lock_id", 128)
+            or re.fullmatch(r"[0-9]+:[0-9]+", data["lock_id"]) is None
+            or not bounded_string("session_id", 512)
+            or (session_file is not None
+                and (not isinstance(session_file, str) or not 0 < len(session_file) <= 4096
+                     or not Path(session_file).is_absolute() or "\n" in session_file or "\r" in session_file))
+            or not bounded_string("provider", 512)
+            or not bounded_string("model", 512)
+            or data.get("effort") not in PRIMARY_RUNTIME_EFFORTS):
+        raise ValueError(tr("Primär-Runtime-Felder ungültig"))
+    return dict(data, model=data["provider"] + "/" + data["model"])
 
 
 def validate_snapshot(data, home):
@@ -458,6 +495,21 @@ class Source:
             sys.executable, str(Path(__file__).with_name("primary_identity.py")),
             "--runtime", str(pid), cwd, harness], min(3, remaining))
 
+    def primary_runtime(self, deadline):
+        """Consume Firstmate's verified public runtime verdict without another fallback."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(tr("Firstmate-Messbudget verbraucht"))
+        env = os.environ.copy()
+        for key in list(env):
+            if key.startswith("FM_"):
+                del env[key]
+        env.update(FM_HOME=self.config.home, FM_ROOT_OVERRIDE=self.config.root)
+        data = self.runner.run([
+            str(Path(self.config.root) / "bin/fm-primary-runtime.sh"), "read"
+        ], min(3, remaining), env)
+        return validate_primary_runtime(data)
+
     def runtime_selection(self, task, foreground, session, pane, found, socket, deadline):
         """Read only exact pane PIDs and accept an environment bound to this task."""
         matches = []
@@ -616,14 +668,18 @@ class Source:
                       else tr("Native Aktivität unbekannt · Herdr-Registrierung prüfen") if state == "unknown"
                       else tr("Primärer Chat · Enter wechselt"))
             runtime = {}
-            owner_pid = owner.get("process", {}).get("pid")
-            exact_processes = [p for p in foreground if isinstance(p, dict) and p.get("pid") == owner_pid
-                               and isinstance(p.get("cwd"), str) and p["cwd"]]
-            if include_runtime and len(exact_processes) == 1:
+            if include_runtime:
                 try:
-                    runtime = self.process_runtime(owner_pid, exact_processes[0]["cwd"], agent["agent"], deadline).get("runtime", {})
+                    runtime = self.primary_runtime(deadline)
+                    if (runtime["owner_pid"] != owner["process"]["pid"]
+                            or runtime["lock_id"] != ":".join(str(value) for value in owner["lock"][:2])):
+                        raise ValueError("Primary runtime owner mismatch")
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+                    # The producer's failed read verdict is explicit unavailable.
+                    # Never recover it from owner environment or session directories.
                     runtime = {}
+                if run(reader + [str(shell)]) != owner:
+                    raise ValueError(tr("Owner/Abstammung während Prüfung geändert oder unbestätigt"))
             started = process_start(owner.get("process", {}).get("start"))
             return PrimaryRow(key, state, reason, time.time(),
                               agent["agent"], session, pane, physical,
