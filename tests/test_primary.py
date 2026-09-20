@@ -125,6 +125,34 @@ class OwnerReaderTests(unittest.TestCase):
         env['PI_SESSION_ID'] = 'replacement'
         self.assertEqual(owner_api.session_selection(env, '/exact/worktree'), {'model': '', 'effort': ''})
 
+    def test_process_session_id_selects_one_of_multiple_worktree_sessions(self):
+        Path(self.home / 'worktree').mkdir()
+        cwd = str((self.home / 'worktree').resolve())
+        directory = self.home / '.pi/agent/sessions' / ('--' + cwd.strip('/').replace('/', '-') + '--')
+        directory.mkdir(parents=True)
+
+        def write_session(session_id, model_id):
+            path = directory / f'{session_id}.jsonl'
+            path.write_text('\n'.join([
+                json.dumps({'type': 'session', 'id': session_id, 'cwd': cwd}),
+                json.dumps({'type': 'model_change', 'id': f'm-{session_id}', 'parentId': None,
+                            'provider': 'openai-codex', 'modelId': model_id}),
+                json.dumps({'type': 'thinking_level_change', 'id': f'e-{session_id}',
+                            'parentId': f'm-{session_id}', 'thinkingLevel': 'medium'}), '']))
+            return path
+
+        write_session('live-session', 'gpt-5.6-sol')
+        write_session('sibling-session', 'gpt-6-astra')
+        with patch.object(owner_api.Path, 'home', return_value=self.home):
+            self.assertEqual(owner_api.session_selection(
+                {'PI_SESSION_ID': 'live-session'}, cwd, 1, 'pi'),
+                {'model': 'openai-codex/gpt-5.6-sol', 'effort': 'medium'})
+            self.assertEqual(owner_api.session_selection({}, cwd, 1, 'pi'),
+                             {'model': '', 'effort': ''})
+            self.assertEqual(owner_api.session_selection(
+                {'PI_SESSION_ID': 'missing-session'}, cwd, 1, 'pi'),
+                {'model': '', 'effort': ''})
+
     def test_generation_unique_default_pi_session_and_ambiguity(self):
         Path(self.home / 'worktree').mkdir()
         cwd = str((self.home / 'worktree').resolve())
