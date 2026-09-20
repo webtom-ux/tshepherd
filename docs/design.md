@@ -103,7 +103,7 @@ explanation. Counters are explicit observation counts; `completed` belongs to
 the task axis and overlaps with live states. Colored number blocks sit
 vertically beside the branding; project groups have their own colors and
 indented single-line workers. Agent, model, live, task, task time, and latest
-activity sit on fixed cell columns. For Pi, the model cell reads only a session
+activity sit on fixed cell columns. For Pi workers, the model cell reads only a session
 file bound to the confirmed process in the exact worktree and follows that
 file's active entry chain. An exact `PI_SESSION_FILE` takes precedence and does
 not require `PI_SESSION_ID`; when both are supplied, the header ID must match.
@@ -192,13 +192,23 @@ issue a fleet snapshot or worker queries. Agent/tab focus use the shared
 existing navigation path with repeated target checks before the second mutation
 and at the completion confirmation.
 
+After that physical owner and endpoint are confirmed, model display for the
+primary row invokes the configured Firstmate root's public
+`bin/fm-primary-runtime.sh read` interface with the explicit home. Only a
+successful, defensively validated `firstmate-primary-runtime.v1` record supplies
+its provider/model/effort. A failed read, stale producer refusal, malformed
+record, or unknown schema leaves the compact label `?·?`; TShepherd does not
+recover by scanning session directories, timestamps, processes, transcripts,
+or launch defaults. Runtime display metadata is not part of selection identity,
+and focus rechecks omit this display-only read.
+
 The reads are not atomic. Between two measurements or after the last check,
 process, lock, or pane can change. Lock mtime is a conservative reuse check,
 not a kernel-signed ownership generation; manipulation by the same local user
 or a changed system clock is not an extra security boundary. Same-PID exec
 still requires the current harness check.
-There is no new service, no shared state schema, and no fallback to a name
-search or guessed process interpretation.
+There is no new service, no consumer-owned shared state schema, and no fallback
+to a name search or guessed process interpretation.
 
 ## Acceptance points
 

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -327,6 +328,14 @@ class OwnerReaderTests(unittest.TestCase):
                 owner_api.Linux(self.home / 'missing-proc', clock_ticks=100)
 
 
+def runtime_record(provider='openai-codex', model='gpt-5.6-sol', effort='medium'):
+    return dict(schema=app.PRIMARY_RUNTIME_SCHEMA, generation='generation-1', harness='pi',
+                owner_pid=321,
+                owner_incarnation='00000000-0000-0000-0000-000000000000:123',
+                lock_id='1:2', session_id='session-1', session_file=None,
+                provider=provider, model=model, effort=effort)
+
+
 class PrimaryRunner(FakeRunner):
     def __init__(self):
         super().__init__()
@@ -338,12 +347,16 @@ class PrimaryRunner(FakeRunner):
                                            HERDR_SOCKET_PATH='/fixture/herdr/sessions/named/herdr.sock'))
         self.ancestry = True
         self.after_focus = None
+        self.primary_runtime = None
 
     def run(self, argv, timeout, env=None):
+        if Path(argv[0]).name == 'fm-primary-runtime.sh':
+            self.calls.append(argv)
+            if self.primary_runtime is None:
+                raise RuntimeError('public runtime unavailable')
+            return copy.deepcopy(self.primary_runtime)
         if len(argv) > 1 and Path(argv[1]).name == 'primary_identity.py':
             self.calls.append(argv)
-            if len(argv) > 2 and argv[2] == '--runtime':
-                return {'runtime': copy.deepcopy(self.owner.get('runtime', {}))}
             if len(argv) == 5 and not self.ancestry:
                 return {'unavailable': 'not a descendant'}
             return copy.deepcopy(self.owner)
@@ -353,6 +366,74 @@ class PrimaryRunner(FakeRunner):
         if argv[1:3] == ['agent', 'focus'] and self.after_focus:
             self.after_focus()
         return result
+
+
+class PrimaryRuntimeCliTests(unittest.TestCase):
+    """Exercise the producer contract only through its executable public boundary."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / 'firstmate'
+        self.home = Path(self.temp.name) / 'home'
+        (self.root / 'bin').mkdir(parents=True)
+        self.home.mkdir()
+        self.response = self.root / 'response.json'
+        cli = self.root / 'bin/fm-primary-runtime.sh'
+        cli.write_text("""#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+root = Path(__file__).resolve().parents[1]
+if Path(os.environ.get('FM_HOME', '')).resolve() != (root.parent / 'home').resolve() or Path(os.environ.get('FM_ROOT_OVERRIDE', '')).resolve() != root:
+    sys.exit(2)
+if (root / 'refuse').exists():
+    sys.exit(1)
+sys.stdout.buffer.write((root / 'response.json').read_bytes())
+""")
+        cli.chmod(0o755)
+        self.source = app.Source(app.Config(str(self.home), str(self.root)),
+                                 app.Runner(threading.Event()))
+
+    def write(self, value):
+        self.response.write_text(json.dumps(value))
+
+    def test_valid_sol_medium_and_provider_model_mapping(self):
+        cases = [
+            (runtime_record(), 'Sol·M'),
+            (runtime_record('x-ai', 'grok-4', 'high'), 'Grok·H'),
+            (runtime_record('google', 'gemini-2.5-pro', 'low'), 'Gemini·L'),
+        ]
+        for record, expected in cases:
+            with self.subTest(expected=expected):
+                self.write(record)
+                runtime = self.source.primary_runtime(time.monotonic() + 5)
+                self.assertEqual(app.compact_model(runtime['model'], runtime['effort']), expected)
+
+    def test_exit_one_is_unavailable_instead_of_unverified_json(self):
+        self.write(runtime_record())
+        (self.root / 'refuse').write_text('stale producer verdict')
+        with self.assertRaises(RuntimeError):
+            self.source.primary_runtime(time.monotonic() + 5)
+
+    def test_malformed_unexpected_schema_and_fields_are_rejected(self):
+        valid = runtime_record()
+        malformed = [
+            dict(valid, schema='firstmate-primary-runtime.v2'),
+            dict(valid, extra='not-public'),
+            {key: value for key, value in valid.items() if key != 'provider'},
+            dict(valid, provider=''),
+            dict(valid, model='x' * 513),
+            dict(valid, effort='ultra'),
+            dict(valid, owner_pid=True),
+            dict(valid, session_file='relative/session.jsonl'),
+            dict(valid, owner_incarnation='not-an-incarnation'),
+            ['not', 'an', 'object'],
+        ]
+        for value in malformed:
+            with self.subTest(value=value):
+                self.write(value)
+                with self.assertRaises(ValueError):
+                    self.source.primary_runtime(time.monotonic() + 5)
 
 
 class PrimaryTests(unittest.TestCase):
@@ -365,12 +446,12 @@ class PrimaryTests(unittest.TestCase):
         return self.source.primary(time.monotonic() + 12)
 
     def test_primary_exact_focus_without_fleet_and_no_outcome(self):
-        self.runner.owner['runtime'] = {'model': 'openai-codex/gpt-6-astra', 'effort': 'medium'}
+        self.runner.primary_runtime = runtime_record(model='gpt-6-astra')
         first = self.measured()
         self.assertTrue(first.physical, first.reason)
         self.assertEqual(first.live, 'idle')
         self.assertEqual(app.compact_model(first.model, first.effort), 'Astra·M')
-        self.runner.owner['runtime'] = {'model': 'openai-codex/gpt-5.6-terra', 'effort': 'medium'}
+        self.runner.primary_runtime = runtime_record(model='gpt-5.6-terra')
         switched = self.measured()
         self.assertEqual(switched.key, first.key)  # runtime selection is not target identity
         self.assertEqual(app.compact_model(switched.model, switched.effort), 'Terra·M')
@@ -386,11 +467,16 @@ class PrimaryTests(unittest.TestCase):
         self.assertTrue(done.physical)
         self.assertIn('confirmed', self.source.focus(done.key))
 
-    def test_primary_without_unique_runtime_session_stays_unknown_model(self):
+    def test_primary_unavailable_runtime_has_no_session_scan_fallback(self):
         first = self.measured()
         self.assertTrue(first.physical)
         self.assertEqual((first.model, first.effort), ('', ''))
         self.assertEqual(app.compact_model(first.model, first.effort), '?·?')
+        runtime_reads = [call for call in self.runner.calls
+                         if Path(call[0]).name == 'fm-primary-runtime.sh']
+        self.assertEqual(runtime_reads, [['/source/bin/fm-primary-runtime.sh', 'read']])
+        self.assertFalse(any(len(call) > 2 and call[2] == '--runtime'
+                             for call in self.runner.calls))
 
     def test_primary_uses_fixed_and_generic_runtime_model_labels(self):
         cases = [
@@ -400,7 +486,8 @@ class PrimaryTests(unittest.TestCase):
         ]
         for runtime_model, expected in cases:
             with self.subTest(runtime_model=runtime_model):
-                self.runner.owner['runtime'] = {'model': runtime_model, 'effort': 'high'}
+                provider, model = runtime_model.split('/', 1)
+                self.runner.primary_runtime = runtime_record(provider, model, 'high')
                 primary = self.measured()
                 self.assertTrue(primary.physical, primary.reason)
                 self.assertEqual(app.compact_model(primary.model, primary.effort), expected)
@@ -513,6 +600,7 @@ class PrimaryTests(unittest.TestCase):
 
     def test_fixed_first_row_navigation_counts_staleness_and_worker_removal(self):
         snapshot = sample_snapshot(str(Path.cwd()))
+        self.runner.primary_runtime = runtime_record()
         primary = self.measured()
         view = app.View(snapshot=snapshot, natives={app.PRIMARY: primary}, last_success=time.time())
         rows = app.overview_rows(view, time.time(), 45)
@@ -526,6 +614,7 @@ class PrimaryTests(unittest.TestCase):
             view.selection(rows, 99)
             lines = [text for text, _ in app.render_lines(view, rows, width, height, False, time.time())]
             self.assertEqual(sum('◆ Firstmate' in s for s in lines), 1)
+            self.assertIn('Sol·M', '\n'.join(lines))
             self.assertLess(len(lines), height + 1)
         view.snapshot['tasks'] = []
         empty = app.overview_rows(view, time.time(), 45)

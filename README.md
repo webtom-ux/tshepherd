@@ -94,9 +94,12 @@ Astra, Terra, Sol, Luna, Grok, and Claude names use fixed labels, in that priori
 order when several match. Other non-empty runtime model IDs get a label of at
 most six characters derived from their model-ID component; no manual mapping
 is needed. `?` marks an empty or unconfirmed model, or missing or unrecognized
-thinking effort. How the runtime Pi session is selected is defined in the
-[design document](docs/design.md#implementation); ambiguous sessions and other
-harnesses remain unknown. The wide table has one
+thinking effort. Firstmate's own row accepts model data only from the configured
+Firstmate root's successful `bin/fm-primary-runtime.sh read` verdict for the
+current primary runtime; an unavailable, stale, or malformed record remains
+`?·?`. Worker runtime selection is defined in the
+[design document](docs/design.md#implementation); ambiguous worker sessions and
+other harnesses remain unknown. The wide table has one
 **Time** column for the current task; narrow rows show that compact duration
 in their detail line. Selecting a worker shows both **Session** and **Task** time
 in the footer, while selecting Firstmate shows only its session time. Durations
