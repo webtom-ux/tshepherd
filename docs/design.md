@@ -193,20 +193,35 @@ existing navigation path with repeated target checks before the second mutation
 and at the completion confirmation.
 
 After that physical owner and endpoint are confirmed, model display for the
-primary row invokes the configured Firstmate root's public
-`bin/fm-primary-runtime.sh read` interface with the explicit home. Only a
-successful, defensively validated `firstmate-primary-runtime.v1` record supplies
-its provider/model/effort. Its owner PID and lock device/inode must match the
-measured owner. After the runtime read, the identity reader reconfirms that
-exact owner, including process generation, full lock signature, environment,
-and shell ancestry; a restart invalidates the row. Firstmate owns the runtime
-incarnation verdict, while this surrounding identity check binds that verdict
-to the measured row without interpreting the producer's platform-specific
-incarnation encoding. A failed read, stale producer refusal, malformed
-record, or unknown schema leaves the compact label `?·?`; TShepherd does not
-recover by scanning session directories, timestamps, processes, transcripts,
-or launch defaults. Runtime display metadata is not part of selection identity,
-and focus rechecks omit this display-only read.
+primary row uses only the complete `agent_session` object repeated by Herdr's
+pane and agent snapshots. It must be exactly `agent=pi`, `source=herdr:pi`,
+`kind=path`, with one bounded absolute path. The exact lock PID must occur once
+in that pane's process information, and the Pi v3 header cwd must equal its
+confirmed cwd. A reference does not help establish the primary itself.
+
+TShepherd opens only that owned regular non-symlink with no-follow semantics.
+The read is limited to 16 MiB, 4 MiB per line, and 4096 entries. It projects only
+entry IDs, parent links, model changes, thinking changes, and assistant
+provider/model fields into the retained graph. Session lines, including payloads,
+are decoded transiently in memory; prompt, message, tool, summary, and custom
+payloads are excluded from that graph and are never logged or displayed.
+Duplicate IDs, cycles, orphan parents,
+invalid values, malformed headers, and unknown versions fail closed. Settings
+come from Pi's last persisted entry ancestry: model changes and assistant model
+identity update the model, while thinking starts at Pi's effective `off` and is
+updated by thinking changes.
+
+The file descriptor and pathname stamps, complete pane/agent session binding,
+and owner lock/process/ancestry are rechecked after parsing. Display-only parsing
+has its own deadline and reserves the final primary owner/lock check; exhausting
+that parsing budget discards only the runtime tuple, not the already confirmed
+row. Append, replacement, pane, terminal, reference, owner, or restart races
+discard the runtime observation. Missing lazy files and ephemeral Pi sessions
+deliberately show `?·?`; there is no fallback to siblings, names, times, process
+searches, default settings, launch metadata, transcript text, or remembered values. This
+display-only read remains outside `primary_target()` and every Enter/focus path,
+so it is not part of selection identity or focus latency. The configured
+Firstmate installation remains compatible when no runtime helper script exists.
 
 The reads are not atomic. Between two measurements or after the last check,
 process, lock, or pane can change. Lock mtime is a conservative reuse check,

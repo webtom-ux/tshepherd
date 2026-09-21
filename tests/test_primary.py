@@ -328,16 +328,180 @@ class OwnerReaderTests(unittest.TestCase):
                 owner_api.Linux(self.home / 'missing-proc', clock_ticks=100)
 
 
-def runtime_record(provider='openai-codex', model='gpt-5.6-sol', effort='medium'):
-    return dict(schema=app.PRIMARY_RUNTIME_SCHEMA, generation='generation-1', harness='pi',
-                owner_pid=321,
-                owner_incarnation='00000000-0000-0000-0000-000000000000:123',
-                lock_id='1:2', session_id='session-1', session_file=None,
-                provider=provider, model=model, effort=effort)
+def pi_entries(provider='openai-codex', model='gpt-5.6-sol', effort='medium'):
+    return [
+        {'type': 'model_change', 'id': 'model', 'parentId': None,
+         'provider': provider, 'modelId': model},
+        {'type': 'thinking_level_change', 'id': 'effort', 'parentId': 'model',
+         'thinkingLevel': effort},
+    ]
+
+
+def write_pi_session(path, cwd, entries=None, version=3, header_id='session-1'):
+    values = [{'type': 'session', 'version': version, 'id': header_id, 'cwd': cwd}]
+    values.extend(pi_entries() if entries is None else entries)
+    Path(path).write_text(''.join(json.dumps(value) + '\n' for value in values))
+
+
+def session_reference(path):
+    return {'agent': 'pi', 'source': 'herdr:pi', 'kind': 'path', 'value': str(path)}
+
+
+class PersistedPiSessionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.cwd = str(self.root / 'worktree')
+        Path(self.cwd).mkdir()
+        self.path = self.root / 'active.jsonl'
+
+    def read(self, entries=None, **header):
+        write_pi_session(self.path, self.cwd, entries, **header)
+        return app.read_pi_session_runtime(str(self.path), self.cwd)
+
+    def test_active_tail_uses_branch_model_assistant_and_effective_thinking(self):
+        entries = [
+            {'type': 'model_change', 'id': 'root-model', 'parentId': None,
+             'provider': 'vendor', 'modelId': 'astra'},
+            {'type': 'thinking_level_change', 'id': 'root-effort', 'parentId': 'root-model',
+             'thinkingLevel': 'high'},
+            {'type': 'model_change', 'id': 'abandoned', 'parentId': 'root-model',
+             'provider': 'vendor', 'modelId': 'terra'},
+            {'type': 'message', 'id': 'assistant', 'parentId': 'root-effort',
+             'message': {'role': 'assistant', 'provider': 'openai-codex', 'model': 'gpt-5.6-sol',
+                         'content': [{'type': 'text', 'text': 'PRIVATE TRANSCRIPT'}]}},
+            {'type': 'thinking_level_change', 'id': 'tail', 'parentId': 'assistant',
+             'thinkingLevel': 'medium'},
+        ]
+        self.assertEqual(self.read(entries),
+                         {'model': 'openai-codex/gpt-5.6-sol', 'effort': 'medium'})
+        # The default is Pi's effective "off" until a change exists.
+        self.assertEqual(self.read(entries[:1]), {'model': 'vendor/astra', 'effort': 'off'})
+
+    def test_header_path_reference_and_lazy_file_fail_closed(self):
+        write_pi_session(self.path, self.cwd)
+        self.assertEqual(app.agent_session_path(session_reference(self.path)), str(self.path))
+        bad_refs = [
+            dict(session_reference(self.path), agent='claude'),
+            dict(session_reference(self.path), source='custom'),
+            dict(session_reference(self.path), kind='id'),
+            dict(session_reference(self.path), value='relative.jsonl'),
+            dict(session_reference(self.path), extra='x'),
+        ]
+        for value in bad_refs:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                app.agent_session_path(value)
+        with self.assertRaises(OSError):
+            app.read_pi_session_runtime(str(self.root / 'lazy.jsonl'), self.cwd)
+        with self.assertRaises(ValueError):
+            self.read(version=2)
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd + '-wrong')
+
+    def test_malformed_duplicate_cycle_orphan_and_invalid_runtime_values(self):
+        cases = [
+            b'not-json\n',
+            (json.dumps({'type': 'session', 'version': 3, 'id': 's', 'cwd': self.cwd})
+             + '\n{"type":"custom","type":"message","id":"x","parentId":null}\n').encode(),
+            (json.dumps({'type': 'session', 'version': 3, 'id': 's', 'cwd': self.cwd})
+             + '\n{"type":"custom","id":"x","parentId":null,"data":NaN}\n').encode(),
+            [pi_entries()[0], dict(pi_entries()[1], id='model')],
+            [dict(pi_entries()[0], parentId='effort'),
+             dict(pi_entries()[1], parentId='model')],
+            [dict(pi_entries()[0], parentId='missing')],
+            [{key: value for key, value in pi_entries()[0].items() if key != 'parentId'}],
+            [dict(pi_entries()[0], provider='')],
+            [dict(pi_entries()[0], modelId='bad\nmodel')],
+            [pi_entries()[0], dict(pi_entries()[1], thinkingLevel='ultra')],
+            [{'type': 'message', 'id': 'm', 'parentId': None,
+              'message': {'role': 'assistant', 'provider': 'p', 'model': ''}}],
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                if isinstance(case, bytes):
+                    self.path.write_bytes(case)
+                else:
+                    write_pi_session(self.path, self.cwd, case)
+                with self.assertRaises((ValueError, OSError)):
+                    app.read_pi_session_runtime(str(self.path), self.cwd)
+
+    def test_file_type_owner_size_line_and_entry_bounds(self):
+        directory = self.root / 'directory'
+        directory.mkdir()
+        with self.assertRaises((ValueError, OSError)):
+            app.read_pi_session_runtime(str(directory), self.cwd)
+        write_pi_session(self.path, self.cwd)
+        link = self.root / 'link.jsonl'
+        link.symlink_to(self.path)
+        with self.assertRaises(OSError):
+            app.read_pi_session_runtime(str(link), self.cwd)
+        with patch.object(app.os, 'getuid', return_value=os.getuid() + 1), self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd)
+        self.path.write_bytes(b'x' * (app.PI_SESSION_BYTES + 1))
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd)
+        header = json.dumps({'type': 'session', 'version': 3, 'id': 's', 'cwd': self.cwd}) + '\n'
+        self.path.write_bytes(header.encode() + b' ' * (app.PI_SESSION_LINE_BYTES + 1))
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd)
+        many = [{'type': 'custom', 'id': f'i{number}',
+                 'parentId': None} for number in range(app.PI_SESSION_ENTRIES + 1)]
+        write_pi_session(self.path, self.cwd, many)
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd)
+        # A legal maximum-depth chain must complete without Python recursion.
+        deep = [{'type': 'custom', 'id': f'd{number}',
+                 'parentId': None if number == 0 else f'd{number - 1}'}
+                for number in range(1500)]
+        deep[0].update(type='model_change', provider='p', modelId='m')
+        write_pi_session(self.path, self.cwd, deep)
+        self.assertEqual(app.read_pi_session_runtime(str(self.path), self.cwd),
+                         {'model': 'p/m', 'effort': 'off'})
+        fifo = self.root / 'fifo'
+        os.mkfifo(fifo)
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(fifo), self.cwd)
+
+    def test_runtime_read_obeys_its_display_only_deadline(self):
+        write_pi_session(self.path, self.cwd)
+        with patch.object(app.time, 'monotonic', return_value=10), self.assertRaises(TimeoutError):
+            app.read_pi_session_runtime(str(self.path), self.cwd, deadline=10)
+
+    def test_growth_and_path_replacement_during_binding_revalidation_are_rejected(self):
+        write_pi_session(self.path, self.cwd)
+        def grow():
+            with self.path.open('a') as handle:
+                handle.write(json.dumps({'type': 'custom', 'id': 'late', 'parentId': 'effort'}) + '\n')
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd, grow)
+        write_pi_session(self.path, self.cwd)
+        def replace_file():
+            replacement = self.root / 'replacement.jsonl'
+            write_pi_session(replacement, self.cwd)
+            replacement.replace(self.path)
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd, replace_file)
+
+    def test_private_payload_is_never_returned_or_exposed_in_errors(self):
+        secret = 'CAPTAINS_PRIVATE_PROMPT_7391'
+        entries = pi_entries() + [
+            {'type': 'custom', 'id': 'private', 'parentId': 'effort', 'data': {'secret': secret}},
+            {'type': 'message', 'id': 'tail', 'parentId': 'private',
+             'message': {'role': 'user', 'content': secret}},
+        ]
+        result = self.read(entries)
+        self.assertNotIn(secret, repr(result))
+        self.path.write_text('{"type":"session","version":3,"id":"s","cwd":' +
+                             json.dumps(self.cwd) + '}\n{"secret":' + json.dumps(secret))
+        try:
+            app.read_pi_session_runtime(str(self.path), self.cwd)
+        except ValueError as error:
+            self.assertNotIn(secret, str(error))
 
 
 class PrimaryRunner(FakeRunner):
-    def __init__(self):
+    def __init__(self, session_path):
         super().__init__()
         self.owner = dict(home=str(Path.cwd()), lock=[1, 2, 4, 10, 10],
                           process=dict(pid=321, start=9, ppid=111, uid=os.getuid()),
@@ -347,98 +511,46 @@ class PrimaryRunner(FakeRunner):
                                            HERDR_SOCKET_PATH='/fixture/herdr/sessions/named/herdr.sock'))
         self.ancestry = True
         self.after_focus = None
-        self.primary_runtime = None
+        self.agent_session = session_reference(session_path)
+        self.terminal_id = 'term123'
+        self.pane_gets = 0
+        self.on_pane_get = None
 
     def run(self, argv, timeout, env=None):
-        if Path(argv[0]).name == 'fm-primary-runtime.sh':
-            self.calls.append(argv)
-            if self.primary_runtime is None:
-                raise RuntimeError('public runtime unavailable')
-            return copy.deepcopy(self.primary_runtime)
         if len(argv) > 1 and Path(argv[1]).name == 'primary_identity.py':
             self.calls.append(argv)
             if len(argv) == 5 and not self.ancestry:
                 return {'unavailable': 'not a descendant'}
             return copy.deepcopy(self.owner)
+        if argv[1:3] == ['pane', 'get']:
+            self.pane_gets += 1
+            if self.on_pane_get:
+                self.on_pane_get(self.pane_gets)
         result = super().run(argv, timeout, env)
         if argv[1:3] == ['pane', 'process-info']:
             result['result']['process_info']['shell_pid'] = 111
+            result['result']['process_info']['foreground_processes'] = [
+                {'name': 'node', 'pid': 321, 'cwd': str(Path.cwd())}]
+        if argv[1:3] in (['pane', 'get'], ['agent', 'get']):
+            key = 'pane' if argv[1] == 'pane' else 'agent'
+            result['result'][key]['terminal_id'] = self.terminal_id
+            if self.agent_session is not None:
+                result['result'][key]['agent_session'] = copy.deepcopy(self.agent_session)
         if argv[1:3] == ['agent', 'focus'] and self.after_focus:
             self.after_focus()
         return result
 
 
-class PrimaryRuntimeCliTests(unittest.TestCase):
-    """Exercise the producer contract only through its executable public boundary."""
+class PrimaryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / 'firstmate'
-        self.home = Path(self.temp.name) / 'home'
-        (self.root / 'bin').mkdir(parents=True)
-        self.home.mkdir()
-        self.response = self.root / 'response.json'
-        cli = self.root / 'bin/fm-primary-runtime.sh'
-        cli.write_text("""#!/usr/bin/env python3
-import os
-from pathlib import Path
-import sys
-root = Path(__file__).resolve().parents[1]
-if Path(os.environ.get('FM_HOME', '')).resolve() != (root.parent / 'home').resolve() or Path(os.environ.get('FM_ROOT_OVERRIDE', '')).resolve() != root:
-    sys.exit(2)
-if (root / 'refuse').exists():
-    sys.exit(1)
-sys.stdout.buffer.write((root / 'response.json').read_bytes())
-""")
-        cli.chmod(0o755)
-        self.source = app.Source(app.Config(str(self.home), str(self.root)),
-                                 app.Runner(threading.Event()))
+        self.session = Path(self.temp.name) / 'active.jsonl'
+        self.reset_source()
 
-    def write(self, value):
-        self.response.write_text(json.dumps(value))
-
-    def test_valid_sol_medium_and_provider_model_mapping(self):
-        cases = [
-            (runtime_record(), 'Sol·M'),
-            (runtime_record('x-ai', 'grok-4', 'high'), 'Grok·H'),
-            (runtime_record('google', 'gemini-2.5-pro', 'low'), 'Gemini·L'),
-        ]
-        for record, expected in cases:
-            with self.subTest(expected=expected):
-                self.write(record)
-                runtime = self.source.primary_runtime(time.monotonic() + 5)
-                self.assertEqual(app.compact_model(runtime['model'], runtime['effort']), expected)
-
-    def test_exit_one_is_unavailable_instead_of_unverified_json(self):
-        self.write(runtime_record())
-        (self.root / 'refuse').write_text('stale producer verdict')
-        with self.assertRaises(RuntimeError):
-            self.source.primary_runtime(time.monotonic() + 5)
-
-    def test_malformed_unexpected_schema_and_fields_are_rejected(self):
-        valid = runtime_record()
-        malformed = [
-            dict(valid, schema='firstmate-primary-runtime.v2'),
-            dict(valid, extra='not-public'),
-            {key: value for key, value in valid.items() if key != 'provider'},
-            dict(valid, provider=''),
-            dict(valid, model='x' * 513),
-            dict(valid, effort='ultra'),
-            dict(valid, owner_pid=True),
-            dict(valid, session_file='relative/session.jsonl'),
-            dict(valid, owner_incarnation='not-an-incarnation'),
-            ['not', 'an', 'object'],
-        ]
-        for value in malformed:
-            with self.subTest(value=value):
-                self.write(value)
-                with self.assertRaises(ValueError):
-                    self.source.primary_runtime(time.monotonic() + 5)
-
-
-class PrimaryTests(unittest.TestCase):
-    def setUp(self):
-        self.runner = PrimaryRunner()
+    def reset_source(self):
+        write_pi_session(self.session, str(Path.cwd()))
+        self.runner = PrimaryRunner(self.session)
         self.source = app.Source(app.Config(str(Path.cwd()), '/source'), self.runner)
         self.source.snapshot = lambda: self.fail('Primary Enter must not read the fleet')
 
@@ -446,18 +558,19 @@ class PrimaryTests(unittest.TestCase):
         return self.source.primary(time.monotonic() + 12)
 
     def test_primary_exact_focus_without_fleet_and_no_outcome(self):
-        self.runner.primary_runtime = runtime_record(model='gpt-6-astra')
+        write_pi_session(self.session, str(Path.cwd()), pi_entries(model='gpt-6-astra'))
         first = self.measured()
         self.assertTrue(first.physical, first.reason)
         self.assertEqual(first.live, 'idle')
         self.assertEqual(app.compact_model(first.model, first.effort), 'Astra·M')
-        self.runner.primary_runtime = runtime_record(model='gpt-5.6-terra')
+        write_pi_session(self.session, str(Path.cwd()), pi_entries(model='gpt-5.6-terra'))
         switched = self.measured()
         self.assertEqual(switched.key, first.key)  # runtime selection is not target identity
         self.assertEqual(app.compact_model(switched.model, switched.effort), 'Terra·M')
         self.assertFalse(hasattr(first, 'task'))
         self.assertFalse(hasattr(first, 'outcome'))
-        self.assertIn('Firstmate', self.source.focus(first.key))
+        with patch.object(app, 'read_pi_session_runtime', side_effect=AssertionError('focus read')):
+            self.assertIn('Firstmate', self.source.focus(first.key))
         mutations = [c[1:4] for c in self.runner.calls if 'focus' in c]
         self.assertEqual(mutations, [['agent', 'focus', 'w1:p1'], ['tab', 'focus', 'w1:t1']])
         self.runner.native = 'done'
@@ -467,29 +580,94 @@ class PrimaryTests(unittest.TestCase):
         self.assertTrue(done.physical)
         self.assertIn('confirmed', self.source.focus(done.key))
 
-    def test_primary_unavailable_runtime_has_no_session_scan_fallback(self):
+    def test_runtime_budget_exhaustion_preserves_confirmed_primary(self):
+        # The live 7.1 MiB session made display parsing the first new work after
+        # the physical proof. Exhaustion used to consume the shared deadline,
+        # so the final owner check returned the startup/stale placeholder.
+        clock = [100.0]
+        def monotonic():
+            return clock[0]
+        def exhaust_runtime(*args):
+            # Before the reserved runtime deadline existed, the parser received
+            # only three arguments and could consume the entire primary budget.
+            clock[0] = args[3] if len(args) == 4 else 112.0
+            raise TimeoutError('display-only runtime budget')
+        with patch.object(app.time, 'monotonic', side_effect=monotonic), \
+                patch.object(app, 'read_pi_session_runtime', side_effect=exhaust_runtime):
+            primary = self.source.primary(112.0)
+        self.assertTrue(primary.physical, primary.reason)
+        self.assertEqual(primary.live, 'idle')
+        self.assertEqual((primary.model, primary.effort), ('', ''))
+        self.assertEqual(app.compact_model(primary.model, primary.effort), '?·?')
+
+    def test_lazy_absent_ephemeral_non_pi_and_unavailable_script_stay_unknown(self):
+        self.runner.agent_session['value'] = str(Path(self.temp.name) / 'lazy.jsonl')
         first = self.measured()
         self.assertTrue(first.physical)
         self.assertEqual((first.model, first.effort), ('', ''))
         self.assertEqual(app.compact_model(first.model, first.effort), '?·?')
-        runtime_reads = [call for call in self.runner.calls
-                         if Path(call[0]).name == 'fm-primary-runtime.sh']
-        self.assertEqual(runtime_reads, [['/source/bin/fm-primary-runtime.sh', 'read']])
-        self.assertFalse(any(len(call) > 2 and call[2] == '--runtime'
+        self.runner.agent_session = None  # Pi --no-session / ephemeral mode.
+        self.assertEqual((self.measured().model, self.measured().effort), ('', ''))
+        self.runner.agent_session = session_reference(self.session)
+        original = self.runner.run
+        def non_pi(argv, timeout, env=None):
+            result = original(argv, timeout, env)
+            if argv[1:3] == ['agent', 'get']:
+                result['result']['agent']['agent'] = 'claude'
+            return result
+        self.runner.run = non_pi
+        non_pi_row = self.measured()
+        self.assertTrue(non_pi_row.physical)
+        self.assertEqual((non_pi_row.model, non_pi_row.effort), ('', ''))
+        self.assertFalse(any(Path(call[0]).name == 'fm-primary-runtime.sh'
                              for call in self.runner.calls))
 
-    def test_primary_runtime_rejects_foreign_pid_or_lock(self):
-        for change in ({'owner_pid': 654}, {'lock_id': '1:3'}):
+    def test_exact_one_of_many_and_session_replacement_are_accepted(self):
+        sibling = Path(self.temp.name) / 'new-session.jsonl'
+        write_pi_session(sibling, str(Path.cwd()), pi_entries(model='gpt-6-astra'))
+        opened = []
+        real_open = os.open
+        def track_open(path, *args, **kwargs):
+            opened.append(str(path))
+            return real_open(path, *args, **kwargs)
+        with patch.object(app.os, 'open', side_effect=track_open):
+            self.assertEqual(app.compact_model(self.measured().model, self.measured().effort), 'Sol·M')
+        self.assertIn(str(self.session), opened)
+        self.assertNotIn(str(sibling), opened)
+        self.runner.agent_session = session_reference(sibling)
+        replaced = self.measured()
+        self.assertTrue(replaced.physical)
+        self.assertEqual(app.compact_model(replaced.model, replaced.effort), 'Astra·M')
+
+    def test_persisted_model_and_effort_appends_update_next_poll(self):
+        first = self.measured()
+        self.assertEqual(app.compact_model(first.model, first.effort), 'Sol·M')
+        with self.session.open('a') as handle:
+            handle.write(json.dumps({'type': 'thinking_level_change', 'id': 'higher',
+                                     'parentId': 'effort', 'thinkingLevel': 'high'}) + '\n')
+        effort = self.measured()
+        self.assertEqual(app.compact_model(effort.model, effort.effort), 'Sol·H')
+        with self.session.open('a') as handle:
+            handle.write(json.dumps({'type': 'model_change', 'id': 'new-model',
+                                     'parentId': 'higher', 'provider': 'vendor',
+                                     'modelId': 'gpt-6-astra'}) + '\n')
+        model = self.measured()
+        self.assertEqual(app.compact_model(model.model, model.effort), 'Astra·H')
+
+    def test_typed_reference_binding_pane_terminal_and_late_session_changes_discard_runtime(self):
+        changes = (
+            lambda: self.runner.agent_session.update(value=str(Path(self.temp.name) / 'replacement.jsonl')),
+            lambda: setattr(self.runner, 'terminal_id', 'replacement-terminal'),
+            lambda: self.runner.agent_session.update(source='foreign'),
+        )
+        for change in changes:
             with self.subTest(change=change):
-                self.runner.primary_runtime = dict(runtime_record(), **change)
+                self.reset_source()
+                self.runner.on_pane_get = lambda count: change() if count == 3 else None
                 primary = self.measured()
-                self.assertTrue(primary.physical)
                 self.assertEqual((primary.model, primary.effort), ('', ''))
-                self.assertEqual(primary.live, 'idle')
 
     def test_restart_during_runtime_read_invalidates_primary(self):
-        original = copy.deepcopy(self.runner.owner)
-        run = self.runner.run
         changes = (
             lambda: self.runner.owner['process'].update(pid=654),
             lambda: self.runner.owner['process'].update(start=11),
@@ -498,19 +676,8 @@ class PrimaryTests(unittest.TestCase):
         )
         for change in changes:
             with self.subTest(change=change):
-                self.runner.owner = copy.deepcopy(original)
-                self.runner.primary_runtime = runtime_record()
-
-                def restart(argv, timeout, env=None):
-                    if Path(argv[0]).name == 'fm-primary-runtime.sh':
-                        change()
-                        self.runner.primary_runtime.update(
-                            owner_pid=self.runner.owner['process']['pid'],
-                            owner_incarnation='00000000-0000-0000-0000-000000000000:456',
-                            lock_id=':'.join(map(str, self.runner.owner['lock'][:2])))
-                    return run(argv, timeout, env)
-
-                self.runner.run = restart
+                self.reset_source()
+                self.runner.on_pane_get = lambda count: change() if count == 3 else None
                 primary = self.measured()
                 self.assertFalse(primary.physical)
                 self.assertEqual((primary.model, primary.effort), ('', ''))
@@ -525,7 +692,7 @@ class PrimaryTests(unittest.TestCase):
         for runtime_model, expected in cases:
             with self.subTest(runtime_model=runtime_model):
                 provider, model = runtime_model.split('/', 1)
-                self.runner.primary_runtime = runtime_record(provider, model, 'high')
+                write_pi_session(self.session, str(Path.cwd()), pi_entries(provider, model, 'high'))
                 primary = self.measured()
                 self.assertTrue(primary.physical, primary.reason)
                 self.assertEqual(app.compact_model(primary.model, primary.effort), expected)
@@ -638,7 +805,6 @@ class PrimaryTests(unittest.TestCase):
 
     def test_fixed_first_row_navigation_counts_staleness_and_worker_removal(self):
         snapshot = sample_snapshot(str(Path.cwd()))
-        self.runner.primary_runtime = runtime_record()
         primary = self.measured()
         view = app.View(snapshot=snapshot, natives={app.PRIMARY: primary}, last_success=time.time())
         rows = app.overview_rows(view, time.time(), 45)
