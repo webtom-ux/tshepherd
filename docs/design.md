@@ -117,6 +117,28 @@ a file is written). If none were born then, a unique worktree session whose
 birth predates that generation but whose content was written during it
 (resume/rewrite) remains that file. Multiple matching IDs, extra in-generation
 births, or extra rewrites stay unknown.
+
+For a Codex worker, its uniquely task-bound process still establishes the worker
+and process generation, while the exact absolute `foreground_cwd`/`cwd` on the
+confirmed Herdr agent entry selects persisted runtime evidence. TShepherd checks
+a bounded set of rollout candidates under `~/.codex/sessions/YYYY/MM/DD`.
+The complete date tree must fit the year, month, and day limits, and all rollout
+candidates must fit the file limit; exceeding any limit leaves runtime unknown.
+It requires the first record to be `session_meta` with that exact cwd and a model
+provider. Timestamped activity must fall between the verified process start and
+the observation time, and exactly one candidate must satisfy that condition.
+Resumed rollouts with older headers participate through their current activity;
+multiple active matches stay unknown regardless of modification order. A bounded
+tail without activity cannot exclude a candidate when earlier records were omitted
+or timestamps are missing. The newest `turn_context` is the
+sole source of model and effort, with each absent field independently unknown.
+Missing generation evidence, ambiguous matches, malformed or changing files,
+absent lazy sessions, and an expired read deadline leave both values unknown.
+A foreign cwd, process
+runtime defaults, older remembered observations, filenames, and traversal beyond
+the bounded candidates are never substitutes. This display-only lookup is not
+used by focus and is never run for Pi workers. Four targeted regression tests
+cover the Codex model resolution; a live-lab demonstration is still missing.
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.

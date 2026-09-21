@@ -1,0 +1,2 @@
+{"timestamp":"2026-03-18T09:30:00Z","type":"session_meta","payload":{"cwd":"/fixture/missing-effort","model_provider":"openai"}}
+{"timestamp":"2026-03-18T09:30:01Z","type":"turn_context","payload":{"model":"gpt-5.6-terra"}}

@@ -1,0 +1,2 @@
+{"timestamp":"2026-03-17T08:00:00Z","type":"session_meta","payload":{"cwd":"/fixture/worktree","model_provider":"openai"}}
+{"timestamp":"2026-03-18T09:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-terra","effort":"low"}}
