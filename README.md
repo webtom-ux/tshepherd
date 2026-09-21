@@ -100,10 +100,12 @@ ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
 [Primary chat](docs/design.md#primary-chat). For a Codex worker, TShepherd reads
 only a bounded set of the newest local `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
-files and selects the newest rollout whose `session_meta.cwd` exactly matches the
-worker cwd reported by its Herdr agent binding. The latest persisted
-`turn_context` supplies both model and effort. A missing field, file, exact cwd
-binding, unique newest match, or completed bounded read shows `?·?`; values are
+files and requires a unique rollout whose `session_meta.cwd` exactly matches the
+worker cwd reported by its Herdr agent binding and whose header timestamp falls
+within the verified process generation. The latest persisted `turn_context`
+supplies model and effort independently: a confirmed model without effort shows
+e.g. `Terra·?`. Missing process or session evidence, ambiguous matches, or an
+incomplete bounded read shows `?·?`; values are
 never borrowed from another worker or remembered without current evidence.
 Worker runtime selection is defined in the
 [design document](docs/design.md#implementation); ambiguous worker sessions and

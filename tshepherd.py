@@ -373,13 +373,6 @@ def _codex_value(value, *keys):
     return found[0]
 
 
-def _codex_runtime_field(context, meta, *keys):
-    """Use metadata only when the turn context truly omits this field."""
-    if any(key in context for key in keys):
-        return _codex_value(context, *keys)
-    return _codex_value(meta, *keys)
-
-
 def _codex_children(path, pattern, deadline):
     """List one date-tree level without permitting an unbounded directory walk."""
     if time.monotonic() >= deadline:
@@ -424,7 +417,7 @@ def codex_session_candidates(root, deadline):
     return candidates[:CODEX_SESSION_FILES]
 
 
-def _read_codex_rollout(path, expected_cwd, deadline):
+def _read_codex_rollout(path, expected_cwd, started, observed, deadline):
     """Read only a bounded header and tail from one stable Codex rollout."""
     if time.monotonic() >= deadline:
         raise TimeoutError(tr("Codex-Sitzungsmessbudget verbraucht"))
@@ -462,6 +455,11 @@ def _read_codex_rollout(path, expected_cwd, deadline):
         if (not isinstance(payload, dict) or payload.get("cwd") != expected_cwd
                 or not _bounded_session_text(payload.get("model_provider"))):
             return None
+        created = epoch(meta.get("timestamp"))
+        if created is None:
+            return {}
+        if not started <= created <= observed:
+            return None
         latest = None
         for raw in tail.splitlines():
             if time.monotonic() >= deadline:
@@ -479,29 +477,30 @@ def _read_codex_rollout(path, expected_cwd, deadline):
                 latest = context
         if latest is None:
             return {}
-        model = _codex_runtime_field(latest, payload, "model")
-        effort = _codex_runtime_field(latest, payload, "effort", "reasoning_effort")
-        return {"model": model, "effort": effort} if model and effort else {}
+        model = _codex_value(latest, "model")
+        effort = _codex_value(latest, "effort", "reasoning_effort")
+        return {"model": model, "effort": effort}
     finally:
         os.close(fd)
 
 
-def read_codex_session_runtime(root, expected_cwd, deadline):
-    """Resolve the newest rollout explicitly bound to one exact worker cwd."""
+def read_codex_session_runtime(root, expected_cwd, started, deadline):
+    """Resolve one exact-cwd rollout created in the confirmed process generation."""
     if (not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()
             or not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
-            or not math.isfinite(deadline)):
+            or not math.isfinite(deadline)
+            or not isinstance(started, (int, float)) or isinstance(started, bool)
+            or not math.isfinite(started) or started <= 0):
+        return {}
+    observed = time.time()
+    if started > observed:
         return {}
     matches = []
-    for modified, path in codex_session_candidates(root, deadline):
-        result = _read_codex_rollout(path, expected_cwd, deadline)
+    for _modified, path in codex_session_candidates(root, deadline):
+        result = _read_codex_rollout(path, expected_cwd, started, observed, deadline)
         if result is not None:
-            matches.append((modified, result))
-    if not matches:
-        return {}
-    newest = max(item[0] for item in matches)
-    selected = [result for modified, result in matches if modified == newest]
-    return selected[0] if len(selected) == 1 else {}
+            matches.append(result)
+    return matches[0] if len(matches) == 1 else {}
 
 
 def codex_agent_cwd(agent):
@@ -839,7 +838,7 @@ class Source:
                 try:
                     root = (Path(self.config.codex_sessions) if self.config.codex_sessions
                             else Path.home() / ".codex" / "sessions")
-                    runtime = read_codex_session_runtime(root, cwd, deadline)
+                    runtime = read_codex_session_runtime(root, cwd, started, deadline)
                     model, effort = clean(runtime.get("model")), clean(runtime.get("effort"))
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                     pass

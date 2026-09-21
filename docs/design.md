@@ -124,10 +124,14 @@ confirmed Herdr agent entry selects persisted runtime evidence. TShepherd checks
 only a fixed number of newest rollout candidates under the most recent bounded
 `~/.codex/sessions/YYYY/MM/DD` date directories, ordered by modification time.
 It requires the first record to be `session_meta` with that exact cwd and a model
-provider, then uses the newest `turn_context` in the newest matching rollout;
-`session_meta` is only a fallback for absent runtime fields. Equal-newest matches,
-missing model or effort, malformed or changing files, absent lazy sessions, and
-an expired read deadline all leave both values unknown. A foreign cwd, process
+provider. Its header timestamp must fall between the verified process start and
+the observation time, and exactly one candidate must match that generation and
+cwd. Older sessions, including resumed sessions without a provable current
+process binding, cannot supply runtime values. The newest `turn_context` is the
+sole source of model and effort, with each absent field independently unknown.
+Missing generation evidence, ambiguous matches, malformed or changing files,
+absent lazy sessions, and an expired read deadline leave both values unknown.
+A foreign cwd, process
 runtime defaults, older remembered observations, filenames, and traversal beyond
 the bounded candidates are never substitutes. This display-only lookup is not
 used by focus and is never run for Pi workers.

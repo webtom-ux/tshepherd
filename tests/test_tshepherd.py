@@ -1,3 +1,4 @@
+import json
 import copy
 import contextlib
 import io
@@ -368,7 +369,7 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
 
-    def test_codex_runtime_uses_exact_agent_cwd_and_newest_rollout(self):
+    def test_codex_runtime_uses_exact_agent_cwd_and_process_generation(self):
         fixture = Path(__file__).with_name('fixtures') / 'codex_sessions'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'sessions'
@@ -377,10 +378,8 @@ class SourceTests(unittest.TestCase):
             rollouts = sorted(root.glob('*/*/*/rollout-*.jsonl'))
             for index, path in enumerate(rollouts, 1):
                 os.utime(path, ns=(index * 10**9, index * 10**9))
-            # The lexically last fixture is the newest matching rollout; the
-            # foreign cwd is newer still and must never bleed into this row.
             names = {path.name: path for path in rollouts}
-            os.utime(names['rollout-old-match.jsonl'], ns=(10**9, 10**9))
+            os.utime(names['rollout-old-match.jsonl'], ns=(40**9, 40**9))
             os.utime(names['rollout-new-match.jsonl'], ns=(20**9, 20**9))
             os.utime(names['rollout-missing-effort.jsonl'], ns=(25**9, 25**9))
             os.utime(names['rollout-foreign.jsonl'], ns=(30**9, 30**9))
@@ -389,7 +388,7 @@ class SourceTests(unittest.TestCase):
             self.task['harness'] = 'codex'
             self.source.config.codex_sessions = str(root)
             self.runner.runtime = {
-                'process': {'pid': 321, 'start': time.time_ns() - 10**9},
+                'process': {'pid': 321, 'start': int(app.epoch('2026-03-18T08:59:59Z') * 10**9)},
                 'environment': {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
                                 'HERDR_SESSION': 'named',
                                 'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
@@ -401,14 +400,56 @@ class SourceTests(unittest.TestCase):
             row = app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0]
             self.assertEqual(row.model, 'Terra·L')
 
-            for cwd in ('/fixture/no-session', '/fixture/missing-effort'):
+            for cwd, expected, label in (
+                    ('/fixture/no-session', ('', ''), '?·?'),
+                    ('/fixture/missing-effort', ('gpt-5.6-terra', ''), 'Terra·?')):
                 with self.subTest(cwd=cwd):
                     self.runner.agent_cwd = cwd
                     missing = self.source.probe(self.task, time.monotonic() + 10)
-                    self.assertEqual((missing.model, missing.effort), ('', ''))
+                    self.assertEqual((missing.model, missing.effort), expected)
                     self.assertEqual(app.rows_for(
                         self.snapshot, {self.task['id']: missing}, time.time(), 45)[0].model,
-                        '?·?')
+                        label)
+
+            self.runner.agent_cwd = '/fixture/codex-worktree'
+            self.runner.runtime['process']['start'] = time.time_ns() - 10**9
+            restarted = self.source.probe(self.task, time.monotonic() + 10)
+            self.assertEqual((restarted.model, restarted.effort), ('', ''))
+
+    def test_codex_generation_and_independent_runtime_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            day = Path(directory) / '2026' / '03' / '18'
+            day.mkdir(parents=True)
+            path = day / 'rollout-current.jsonl'
+            started = app.epoch('2026-03-18T09:00:00Z')
+            meta = {'timestamp': '2026-03-18T09:00:01Z', 'type': 'session_meta',
+                    'payload': {'cwd': '/fixture/worktree', 'model_provider': 'openai',
+                                'model': 'metadata-model', 'effort': 'max'}}
+            def read():
+                return app.read_codex_session_runtime(
+                    Path(directory), '/fixture/worktree', started, time.monotonic() + 2)
+            for context, expected in (
+                    ({'model': 'gpt-5.6-terra'}, {'model': 'gpt-5.6-terra', 'effort': ''}),
+                    ({'effort': 'low'}, {'model': '', 'effort': 'low'}),
+                    ({}, {'model': '', 'effort': ''})):
+                with self.subTest(context=context):
+                    path.write_text('\n'.join(json.dumps(record) for record in (
+                        meta, {'type': 'turn_context', 'payload': {
+                            'model': 'older-model', 'effort': 'high'}},
+                        {'type': 'turn_context', 'payload': context})) + '\n')
+                    self.assertEqual(read(), expected)
+            sibling = day / 'rollout-sibling.jsonl'
+            sibling.write_text(path.read_text())
+            self.assertEqual(read(), {})
+            sibling.unlink()
+            for stamp in ('2026-03-18T08:59:59Z', '2099-01-01T00:00:00Z', None):
+                meta['timestamp'] = stamp
+                path.write_text(json.dumps(meta) + '\n' + json.dumps({
+                    'type': 'turn_context', 'payload': {'model': 'gpt-5.6-terra',
+                                                       'effort': 'low'}}) + '\n')
+                self.assertEqual(read(), {})
+            for started in (0, None, float('nan')):
+                self.assertEqual(read(), {})
 
     def test_codex_rollout_reads_are_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -422,12 +463,12 @@ class SourceTests(unittest.TestCase):
                 os.utime(path, ns=((index + 1) * 10**9, (index + 1) * 10**9))
             calls = []
             original = app._read_codex_rollout
-            def counted(path, cwd, deadline):
+            def counted(path, cwd, started, observed, deadline):
                 calls.append(path)
-                return original(path, cwd, deadline)
+                return original(path, cwd, started, observed, deadline)
             with patch.object(app, '_read_codex_rollout', counted):
                 result = app.read_codex_session_runtime(
-                    Path(directory), '/fixture/codex-worktree', time.monotonic() + 2)
+                    Path(directory), '/fixture/codex-worktree', time.time() - 1, time.monotonic() + 2)
             self.assertEqual(result, {})
             self.assertEqual(len(calls), app.CODEX_SESSION_FILES)
         started = time.monotonic()
