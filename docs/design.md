@@ -137,7 +137,8 @@ absent lazy sessions, and an expired read deadline leave both values unknown.
 A foreign cwd, process
 runtime defaults, older remembered observations, filenames, and traversal beyond
 the bounded candidates are never substitutes. This display-only lookup is not
-used by focus and is never run for Pi workers.
+used by focus and is never run for Pi workers. Four targeted regression tests
+cover the Codex model resolution; a live-lab demonstration is still missing.
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.
