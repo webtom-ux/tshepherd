@@ -121,13 +121,16 @@ births, or extra rewrites stay unknown.
 For a Codex worker, its uniquely task-bound process still establishes the worker
 and process generation, while the exact absolute `foreground_cwd`/`cwd` on the
 confirmed Herdr agent entry selects persisted runtime evidence. TShepherd checks
-only a fixed number of newest rollout candidates under the most recent bounded
-`~/.codex/sessions/YYYY/MM/DD` date directories, ordered by modification time.
+a bounded set of rollout candidates under `~/.codex/sessions/YYYY/MM/DD`.
+The complete date tree must fit the year, month, and day limits, and all rollout
+candidates must fit the file limit; exceeding any limit leaves runtime unknown.
 It requires the first record to be `session_meta` with that exact cwd and a model
-provider. Its header timestamp must fall between the verified process start and
-the observation time, and exactly one candidate must match that generation and
-cwd. Older sessions, including resumed sessions without a provable current
-process binding, cannot supply runtime values. The newest `turn_context` is the
+provider. Timestamped activity must fall between the verified process start and
+the observation time, and exactly one candidate must satisfy that condition.
+Resumed rollouts with older headers participate through their current activity;
+multiple active matches stay unknown regardless of modification order. A bounded
+tail without activity cannot exclude a candidate when earlier records were omitted
+or timestamps are missing. The newest `turn_context` is the
 sole source of model and effort, with each absent field independently unknown.
 Missing generation evidence, ambiguous matches, malformed or changing files,
 absent lazy sessions, and an expired read deadline leave both values unknown.

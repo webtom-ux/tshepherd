@@ -451,6 +451,52 @@ class SourceTests(unittest.TestCase):
             for started in (0, None, float('nan')):
                 self.assertEqual(read(), {})
 
+    def test_codex_resumed_activity_and_search_completeness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            day = root / '2026' / '03' / '18'
+            day.mkdir(parents=True)
+            started = app.epoch('2026-03-18T09:00:00Z')
+            def rollout(header, activity, model):
+                return '\n'.join(json.dumps(record) for record in (
+                    {'timestamp': header, 'type': 'session_meta', 'payload': {
+                        'cwd': '/fixture/worktree', 'model_provider': 'openai'}},
+                    {'timestamp': activity, 'type': 'turn_context', 'payload': {
+                        'model': model, 'effort': 'low'}})) + '\n'
+            def read():
+                return app.read_codex_session_runtime(
+                    root, '/fixture/worktree', started, time.monotonic() + 2)
+            resumed = day / 'rollout-resumed.jsonl'
+            fixture = (Path(__file__).with_name('fixtures') / 'codex_sessions'
+                       / '2026' / '03' / '18' / 'rollout-resumed.jsonl')
+            resumed.write_text(fixture.read_text())
+            self.assertEqual(read(), {'model': 'gpt-5.6-terra', 'effort': 'low'})
+            sibling = day / 'rollout-new.jsonl'
+            sibling.write_text(rollout('2026-03-18T09:01:00Z',
+                                      '2026-03-18T09:01:01Z', 'gpt-5.6-sol'))
+            self.assertEqual(read(), {})
+            resumed.unlink()
+            self.assertEqual(read(), {'model': 'gpt-5.6-sol', 'effort': 'low'})
+            for index in range(app.CODEX_SESSION_FILES):
+                (day / f'rollout-old-{index}.jsonl').write_text(rollout(
+                    '2026-03-17T08:00:00Z', '2026-03-17T08:01:00Z', 'older'))
+            self.assertEqual(read(), {})
+            for path in day.glob('rollout-old-*.jsonl'):
+                path.unlink()
+            for index in range(app.CODEX_SESSION_DAYS):
+                (root / '2026' / '03' / f'{index + 1:02}').mkdir()
+            self.assertEqual(read(), {})
+            for index in range(app.CODEX_SESSION_DAYS):
+                (root / '2026' / '03' / f'{index + 1:02}').rmdir()
+            for month in ('01', '02'):
+                (root / '2026' / month).mkdir()
+            self.assertEqual(read(), {})
+            for month in ('01', '02'):
+                (root / '2026' / month).rmdir()
+            for year in ('2024', '2025'):
+                (root / year).mkdir()
+            self.assertEqual(read(), {})
+
     def test_codex_rollout_reads_are_bounded(self):
         with tempfile.TemporaryDirectory() as directory:
             day = Path(directory) / '2026' / '03' / '18'
@@ -470,7 +516,7 @@ class SourceTests(unittest.TestCase):
                 result = app.read_codex_session_runtime(
                     Path(directory), '/fixture/codex-worktree', time.time() - 1, time.monotonic() + 2)
             self.assertEqual(result, {})
-            self.assertEqual(len(calls), app.CODEX_SESSION_FILES)
+            self.assertEqual(len(calls), 0)
         started = time.monotonic()
         with self.assertRaises(TimeoutError):
             app.codex_session_candidates(Path('/does/not/matter'), started - 1)

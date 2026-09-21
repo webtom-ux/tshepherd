@@ -99,10 +99,13 @@ path reported by Herdr for the physically verified primary pane; unconfirmed,
 ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
 [Primary chat](docs/design.md#primary-chat). For a Codex worker, TShepherd reads
-only a bounded set of the newest local `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+only a bounded set of local `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 files and requires a unique rollout whose `session_meta.cwd` exactly matches the
-worker cwd reported by its Herdr agent binding and whose header timestamp falls
-within the verified process generation. The latest persisted `turn_context`
+worker cwd reported by its Herdr agent binding and which contains timestamped
+activity at or after the verified process start and no later than observation.
+Resumed sessions participate even when their headers predate the process.
+If the complete candidate search exceeds a directory, date, or file limit, the
+result stays unknown; a truncated window never establishes uniqueness. The latest persisted `turn_context`
 supplies model and effort independently: a confirmed model without effort shows
 e.g. `Terra·?`. Missing process or session evidence, ambiguous matches, or an
 incomplete bounded read shows `?·?`; values are

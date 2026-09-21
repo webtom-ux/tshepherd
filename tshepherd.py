@@ -388,19 +388,26 @@ def _codex_children(path, pattern, deadline):
 
 
 def codex_session_candidates(root, deadline):
-    """Return a bounded newest-first set from recent YYYY/MM/DD directories."""
+    """Return candidates only when the complete date tree fits the bounds."""
     root = Path(root)
     if not root.is_absolute():
         raise ValueError(tr("Codex-Sitzungsverzeichnis ungültig"))
     days = []
     try:
-        years = _codex_children(root, re.compile(r"[0-9]{4}"), deadline)[:2]
+        years = _codex_children(root, re.compile(r"[0-9]{4}"), deadline)
+        if len(years) > 2:
+            return []
         for year in years:
-            for month in _codex_children(year, re.compile(r"(?:0[1-9]|1[0-2])"), deadline)[:2]:
-                days.extend(_codex_children(month, re.compile(r"(?:0[1-9]|[12][0-9]|3[01])"), deadline)[:CODEX_SESSION_DAYS])
+            months = _codex_children(year, re.compile(r"(?:0[1-9]|1[0-2])"), deadline)
+            if len(months) > 2:
+                return []
+            for month in months:
+                days.extend(_codex_children(month, re.compile(r"(?:0[1-9]|[12][0-9]|3[01])"), deadline))
+                if len(days) > CODEX_SESSION_DAYS:
+                    return []
     except FileNotFoundError:
         return []
-    days = sorted(days, key=lambda item: item.parts[-3:], reverse=True)[:CODEX_SESSION_DAYS]
+    days = sorted(days, key=lambda item: item.parts[-3:], reverse=True)
     candidates = []
     for day in days:
         if time.monotonic() >= deadline:
@@ -413,8 +420,10 @@ def codex_session_candidates(root, deadline):
                         and entry.is_file(follow_symlinks=False)):
                     info = entry.stat(follow_symlinks=False)
                     candidates.append((info.st_mtime_ns, Path(entry.path)))
+                    if len(candidates) > CODEX_SESSION_FILES:
+                        return []
     candidates.sort(key=lambda item: (item[0], str(item[1])), reverse=True)
-    return candidates[:CODEX_SESSION_FILES]
+    return candidates
 
 
 def _read_codex_rollout(path, expected_cwd, started, observed, deadline):
@@ -455,11 +464,8 @@ def _read_codex_rollout(path, expected_cwd, started, observed, deadline):
         if (not isinstance(payload, dict) or payload.get("cwd") != expected_cwd
                 or not _bounded_session_text(payload.get("model_provider"))):
             return None
-        created = epoch(meta.get("timestamp"))
-        if created is None:
-            return {}
-        if not started <= created <= observed:
-            return None
+        active = False
+        uncertain = False
         latest = None
         for raw in tail.splitlines():
             if time.monotonic() >= deadline:
@@ -470,11 +476,18 @@ def _read_codex_rollout(path, expected_cwd, started, observed, deadline):
                 value = json.loads(raw)
             except (UnicodeDecodeError, json.JSONDecodeError):
                 raise ValueError(tr("Codex-Sitzungsdatei fehlerhaft")) from None
+            stamp = epoch(value.get("timestamp")) if isinstance(value, dict) else None
+            if stamp is None:
+                uncertain = True
+            elif started <= stamp <= observed:
+                active = True
             if isinstance(value, dict) and value.get("type") == "turn_context":
                 context = value.get("payload")
                 if not isinstance(context, dict):
                     raise ValueError(tr("Codex-Laufzeitkontext fehlerhaft"))
                 latest = context
+        if not active:
+            return {} if uncertain or offset else None
         if latest is None:
             return {}
         model = _codex_value(latest, "model")
@@ -485,7 +498,7 @@ def _read_codex_rollout(path, expected_cwd, started, observed, deadline):
 
 
 def read_codex_session_runtime(root, expected_cwd, started, deadline):
-    """Resolve one exact-cwd rollout created in the confirmed process generation."""
+    """Resolve one exact-cwd rollout active in the confirmed process generation."""
     if (not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()
             or not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
             or not math.isfinite(deadline)
