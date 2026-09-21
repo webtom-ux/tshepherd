@@ -28,6 +28,11 @@ PI_SESSION_LINE_BYTES = 4 * 1024 * 1024
 PI_SESSION_ENTRIES = 4096
 PI_SESSION_TEXT = 512
 PRIMARY_RUNTIME_RESERVE = 3.1
+CODEX_SESSION_BYTES = 4 * 1024 * 1024
+CODEX_SESSION_LINE_BYTES = 1024 * 1024
+CODEX_SESSION_FILES = 32
+CODEX_SESSION_DAYS = 4
+CODEX_DIRECTORY_ENTRIES = 128
 PI_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
 AGENT_SESSION_KEYS = frozenset(("agent", "source", "kind", "value"))
 PI_STRUCTURAL_KEYS = frozenset((
@@ -359,6 +364,168 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadlin
         os.close(fd)
 
 
+def _codex_value(value, *keys):
+    """Return one non-conflicting bounded string from a Codex record."""
+    found = [value.get(key) for key in keys if value.get(key) not in (None, "")]
+    if (not found or any(not _bounded_session_text(item) for item in found)
+            or len(set(found)) != 1):
+        return ""
+    return found[0]
+
+
+def _codex_children(path, pattern, deadline):
+    """List one date-tree level without permitting an unbounded directory walk."""
+    if time.monotonic() >= deadline:
+        raise TimeoutError(tr("Codex-Sitzungsmessbudget verbraucht"))
+    values = []
+    with os.scandir(path) as entries:
+        for number, entry in enumerate(entries):
+            if number >= CODEX_DIRECTORY_ENTRIES:
+                raise ValueError(tr("Codex-Sitzungsverzeichnis überschreitet Grenzen"))
+            if pattern.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False):
+                values.append(Path(entry.path))
+    return sorted(values, key=lambda item: item.name, reverse=True)
+
+
+def codex_session_candidates(root, deadline):
+    """Return candidates only when the complete date tree fits the bounds."""
+    root = Path(root)
+    if not root.is_absolute():
+        raise ValueError(tr("Codex-Sitzungsverzeichnis ungültig"))
+    days = []
+    try:
+        years = _codex_children(root, re.compile(r"[0-9]{4}"), deadline)
+        if len(years) > 2:
+            return []
+        for year in years:
+            months = _codex_children(year, re.compile(r"(?:0[1-9]|1[0-2])"), deadline)
+            if len(months) > 2:
+                return []
+            for month in months:
+                days.extend(_codex_children(month, re.compile(r"(?:0[1-9]|[12][0-9]|3[01])"), deadline))
+                if len(days) > CODEX_SESSION_DAYS:
+                    return []
+    except FileNotFoundError:
+        return []
+    days = sorted(days, key=lambda item: item.parts[-3:], reverse=True)
+    candidates = []
+    for day in days:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(tr("Codex-Sitzungsmessbudget verbraucht"))
+        with os.scandir(day) as entries:
+            for number, entry in enumerate(entries):
+                if number >= CODEX_DIRECTORY_ENTRIES:
+                    raise ValueError(tr("Codex-Sitzungsverzeichnis überschreitet Grenzen"))
+                if (entry.name.startswith("rollout-") and entry.name.endswith(".jsonl")
+                        and entry.is_file(follow_symlinks=False)):
+                    info = entry.stat(follow_symlinks=False)
+                    candidates.append((info.st_mtime_ns, Path(entry.path)))
+                    if len(candidates) > CODEX_SESSION_FILES:
+                        return []
+    candidates.sort(key=lambda item: (item[0], str(item[1])), reverse=True)
+    return candidates
+
+
+def _read_codex_rollout(path, expected_cwd, started, observed, deadline):
+    """Read only a bounded header and tail from one stable Codex rollout."""
+    if time.monotonic() >= deadline:
+        raise TimeoutError(tr("Codex-Sitzungsmessbudget verbraucht"))
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_size <= 0:
+            raise ValueError(tr("Codex-Sitzungsdatei nicht bestätigt"))
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            first = handle.readline(CODEX_SESSION_LINE_BYTES + 1)
+        if len(first) > CODEX_SESSION_LINE_BYTES or not first.endswith(b"\n"):
+            raise ValueError(tr("Codex-Sitzungskopf überschreitet Grenzen"))
+        offset = max(0, before.st_size - CODEX_SESSION_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        tail = os.read(fd, CODEX_SESSION_BYTES)
+        if offset:
+            _discard, separator, tail = tail.partition(b"\n")
+            if not separator:
+                raise ValueError(tr("Codex-Sitzungszeile überschreitet Grenzen"))
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        if (_file_stamp(before) != _file_stamp(after)
+                or _file_stamp(after) != _file_stamp(current)):
+            raise ValueError(tr("Codex-Sitzungsdatei während Lesen geändert"))
+        if time.monotonic() >= deadline:
+            raise TimeoutError(tr("Codex-Sitzungsmessbudget verbraucht"))
+        try:
+            meta = json.loads(first)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError(tr("Codex-Sitzungskopf fehlerhaft")) from None
+        if not isinstance(meta, dict) or meta.get("type") != "session_meta":
+            raise ValueError(tr("Codex-Sitzungskopf nicht bestätigt"))
+        payload = meta.get("payload")
+        if (not isinstance(payload, dict) or payload.get("cwd") != expected_cwd
+                or not _bounded_session_text(payload.get("model_provider"))):
+            return None
+        active = False
+        uncertain = False
+        latest = None
+        for raw in tail.splitlines():
+            if time.monotonic() >= deadline:
+                raise TimeoutError(tr("Codex-Sitzungsmessbudget verbraucht"))
+            if len(raw) > CODEX_SESSION_LINE_BYTES:
+                raise ValueError(tr("Codex-Sitzungszeile überschreitet Grenzen"))
+            try:
+                value = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                raise ValueError(tr("Codex-Sitzungsdatei fehlerhaft")) from None
+            stamp = epoch(value.get("timestamp")) if isinstance(value, dict) else None
+            if stamp is None:
+                uncertain = True
+            elif started <= stamp <= observed:
+                active = True
+            if isinstance(value, dict) and value.get("type") == "turn_context":
+                context = value.get("payload")
+                if not isinstance(context, dict):
+                    raise ValueError(tr("Codex-Laufzeitkontext fehlerhaft"))
+                latest = context
+        if not active:
+            return {} if uncertain or offset else None
+        if latest is None:
+            return {}
+        model = _codex_value(latest, "model")
+        effort = _codex_value(latest, "effort", "reasoning_effort")
+        return {"model": model, "effort": effort}
+    finally:
+        os.close(fd)
+
+
+def read_codex_session_runtime(root, expected_cwd, started, deadline):
+    """Resolve one exact-cwd rollout active in the confirmed process generation."""
+    if (not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()
+            or not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
+            or not math.isfinite(deadline)
+            or not isinstance(started, (int, float)) or isinstance(started, bool)
+            or not math.isfinite(started) or started <= 0):
+        return {}
+    observed = time.time()
+    if started > observed:
+        return {}
+    matches = []
+    for _modified, path in codex_session_candidates(root, deadline):
+        result = _read_codex_rollout(path, expected_cwd, started, observed, deadline)
+        if result is not None:
+            matches.append(result)
+    return matches[0] if len(matches) == 1 else {}
+
+
+def codex_agent_cwd(agent):
+    """Use only the exact cwd attached to the Herdr agent binding."""
+    values = [agent.get(key) for key in ("foreground_cwd", "cwd")
+              if agent.get(key) not in (None, "")]
+    if (not values or any(not isinstance(value, str) or not Path(value).is_absolute()
+                          for value in values) or len(set(values)) != 1):
+        return ""
+    return values[0]
+
+
 def validate_snapshot(data, home):
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise ValueError(tr("Snapshot-Schema unbekannt"))
@@ -596,6 +763,7 @@ class Config:
     lab_session: str = ""
     fixture: str = ""
     quota_axi: str = "quota-axi"
+    codex_sessions: str = ""
 
 
 class Source:
@@ -648,7 +816,7 @@ class Source:
             sys.executable, str(Path(__file__).with_name("primary_identity.py")),
             "--runtime", str(pid), cwd, harness], min(3, remaining))
 
-    def runtime_selection(self, task, foreground, session, pane, found, socket, deadline):
+    def runtime_selection(self, task, foreground, agent, session, pane, found, socket, deadline):
         """Read only exact pane PIDs and accept an environment bound to this task."""
         matches = []
         for process in foreground[:8]:
@@ -673,7 +841,21 @@ class Source:
                     matches.append((clean(runtime.get("model")), clean(runtime.get("effort")), started))
             except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                 continue
-        return matches[0] if len(matches) == 1 else ("", "", 0)
+        if len(matches) != 1:
+            return "", "", 0
+        model, effort, started = matches[0]
+        if task.get("harness") == "codex":
+            model = effort = ""
+            cwd = codex_agent_cwd(agent)
+            if cwd:
+                try:
+                    root = (Path(self.config.codex_sessions) if self.config.codex_sessions
+                            else Path.home() / ".codex" / "sessions")
+                    runtime = read_codex_session_runtime(root, cwd, started, deadline)
+                    model, effort = clean(runtime.get("model")), clean(runtime.get("effort"))
+                except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+                    pass
+        return model, effort, started
 
     def probe(self, task, deadline, parallel=False):
         try:
@@ -721,7 +903,7 @@ class Source:
             # Focus uses this probe too; runtime display metadata must not extend
             # its latency-sensitive read path.
             model, effort, started = (("", "", 0) if parallel else
-                                      self.runtime_selection(task, foreground, session, pane, found, socket, deadline))
+                                      self.runtime_selection(task, foreground, agent, session, pane, found, socket, deadline))
             raw = agent.get("agent_status")
             state = {"working": "working", "idle": "idle", "blocked": "waiting", "done": "done"}.get(raw, "unknown")
             physical = tuple(found[k] for k in ("workspace_id", "tab_id", "terminal_id"))

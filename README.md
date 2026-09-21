@@ -98,9 +98,12 @@ thinking effort. Firstmate's model display reads only the exact Pi v3 session
 path reported by Herdr for the physically verified primary pane; unconfirmed,
 ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
-[Primary chat](docs/design.md#primary-chat). Worker runtime selection is defined in the
-[design document](docs/design.md#implementation); ambiguous worker sessions and
-other harnesses remain unknown. The wide table has one
+[Primary chat](docs/design.md#primary-chat). Codex workers also show independently
+confirmed model and effort: a confirmed model without effort shows, for example,
+`Terra·?`. Unconfirmed runtime data stays `?·?`. Worker runtime selection and
+its evidence limits are defined in the
+[design document](docs/design.md#implementation); other harnesses remain unknown.
+The wide table has one
 **Time** column for the current task; narrow rows show that compact duration
 in their detail line. Selecting a worker shows both **Session** and **Task** time
 in the footer, while selecting Firstmate shows only its session time. Durations
