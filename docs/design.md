@@ -117,6 +117,20 @@ a file is written). If none were born then, a unique worktree session whose
 birth predates that generation but whose content was written during it
 (resume/rewrite) remains that file. Multiple matching IDs, extra in-generation
 births, or extra rewrites stay unknown.
+
+For a Codex worker, its uniquely task-bound process still establishes the worker
+and process generation, while the exact absolute `foreground_cwd`/`cwd` on the
+confirmed Herdr agent entry selects persisted runtime evidence. TShepherd checks
+only a fixed number of newest rollout candidates under the most recent bounded
+`~/.codex/sessions/YYYY/MM/DD` date directories, ordered by modification time.
+It requires the first record to be `session_meta` with that exact cwd and a model
+provider, then uses the newest `turn_context` in the newest matching rollout;
+`session_meta` is only a fallback for absent runtime fields. Equal-newest matches,
+missing model or effort, malformed or changing files, absent lazy sessions, and
+an expired read deadline all leave both values unknown. A foreign cwd, process
+runtime defaults, older remembered observations, filenames, and traversal beyond
+the bounded candidates are never substitutes. This display-only lookup is not
+used by focus and is never run for Pi workers.
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.

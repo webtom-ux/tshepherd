@@ -264,6 +264,8 @@ class FakeRunner:
         self.runtime = None
         self.pane = 'w1:p1'
         self.foreground = None
+        self.agent = 'pi'
+        self.agent_cwd = str(Path.cwd())
 
     def run(self, argv, timeout, env=None):
         self.calls.append(argv)
@@ -289,15 +291,15 @@ class FakeRunner:
         if command[:2] == ('agent', 'get'):
             # Real Herdr 0.9 agent_info has no model or effort fields.
             return {'result': {'type': 'agent_info', 'agent': dict(
-                pane, agent='wrong' if self.bad == 'provider' else 'pi', agent_status=self.native,
-                focused=True)}}
+                pane, agent='wrong' if self.bad == 'provider' else self.agent,
+                agent_status=self.native, foreground_cwd=self.agent_cwd, focused=True)}}
         if command[:2] == ('pane', 'process-info'):
             processes = self.foreground or [{
                 'name': 'zsh' if self.bad == 'shell' else 'node', 'pid': 321, 'cwd': str(Path.cwd())}]
             return {'result': {'type': 'pane_process_info', 'process_info': {
                 'pane_id': self.pane, 'foreground_processes': processes}}}
         if command[:2] == ('agent', 'focus'):
-            return {'result': {'type': 'agent_info', 'agent': dict(pane, agent='pi', focused=True)}}
+            return {'result': {'type': 'agent_info', 'agent': dict(pane, agent=self.agent, focused=True)}}
         if command[:2] == ('tab', 'focus'):
             return {'result': {'type': 'tab_info', 'tab': dict(pane, focused=True)}}
         raise AssertionError(argv)
@@ -365,6 +367,73 @@ class SourceTests(unittest.TestCase):
         self.assertEqual((ambiguous.model, ambiguous.effort), ('', ''))
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
+
+    def test_codex_runtime_uses_exact_agent_cwd_and_newest_rollout(self):
+        fixture = Path(__file__).with_name('fixtures') / 'codex_sessions'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'sessions'
+            import shutil
+            shutil.copytree(fixture, root)
+            rollouts = sorted(root.glob('*/*/*/rollout-*.jsonl'))
+            for index, path in enumerate(rollouts, 1):
+                os.utime(path, ns=(index * 10**9, index * 10**9))
+            # The lexically last fixture is the newest matching rollout; the
+            # foreign cwd is newer still and must never bleed into this row.
+            names = {path.name: path for path in rollouts}
+            os.utime(names['rollout-old-match.jsonl'], ns=(10**9, 10**9))
+            os.utime(names['rollout-new-match.jsonl'], ns=(20**9, 20**9))
+            os.utime(names['rollout-missing-effort.jsonl'], ns=(25**9, 25**9))
+            os.utime(names['rollout-foreign.jsonl'], ns=(30**9, 30**9))
+            self.runner.agent = 'codex'
+            self.runner.agent_cwd = '/fixture/codex-worktree'
+            self.task['harness'] = 'codex'
+            self.source.config.codex_sessions = str(root)
+            self.runner.runtime = {
+                'process': {'pid': 321, 'start': time.time_ns() - 10**9},
+                'environment': {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
+                                'HERDR_SESSION': 'named',
+                                'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
+                                'HERDR_PANE_ID': 'w1:p1', 'HERDR_WORKSPACE_ID': 'w1',
+                                'HERDR_TAB_ID': 'w1:t1'},
+                'runtime': {'model': 'must-not-be-used', 'effort': 'max'}}
+            native = self.source.probe(self.task, time.monotonic() + 10)
+            self.assertEqual((native.model, native.effort), ('gpt-5.6-terra', 'low'))
+            row = app.rows_for(self.snapshot, {self.task['id']: native}, time.time(), 45)[0]
+            self.assertEqual(row.model, 'Terra·L')
+
+            for cwd in ('/fixture/no-session', '/fixture/missing-effort'):
+                with self.subTest(cwd=cwd):
+                    self.runner.agent_cwd = cwd
+                    missing = self.source.probe(self.task, time.monotonic() + 10)
+                    self.assertEqual((missing.model, missing.effort), ('', ''))
+                    self.assertEqual(app.rows_for(
+                        self.snapshot, {self.task['id']: missing}, time.time(), 45)[0].model,
+                        '?·?')
+
+    def test_codex_rollout_reads_are_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            day = Path(directory) / '2026' / '03' / '18'
+            day.mkdir(parents=True)
+            line = ('{"type":"session_meta","payload":{"cwd":"/foreign",'
+                    '"model_provider":"openai"}}\n')
+            for index in range(app.CODEX_SESSION_FILES + 20):
+                path = day / f'rollout-{index:03}.jsonl'
+                path.write_text(line)
+                os.utime(path, ns=((index + 1) * 10**9, (index + 1) * 10**9))
+            calls = []
+            original = app._read_codex_rollout
+            def counted(path, cwd, deadline):
+                calls.append(path)
+                return original(path, cwd, deadline)
+            with patch.object(app, '_read_codex_rollout', counted):
+                result = app.read_codex_session_runtime(
+                    Path(directory), '/fixture/codex-worktree', time.monotonic() + 2)
+            self.assertEqual(result, {})
+            self.assertEqual(len(calls), app.CODEX_SESSION_FILES)
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            app.codex_session_candidates(Path('/does/not/matter'), started - 1)
+        self.assertLess(time.monotonic() - started, .2)
 
     def test_focus_verified_native_done_without_semantic_completion(self):
         self.runner.native = 'done'

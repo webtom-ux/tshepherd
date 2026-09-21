@@ -98,7 +98,14 @@ thinking effort. Firstmate's model display reads only the exact Pi v3 session
 path reported by Herdr for the physically verified primary pane; unconfirmed,
 ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
-[Primary chat](docs/design.md#primary-chat). Worker runtime selection is defined in the
+[Primary chat](docs/design.md#primary-chat). For a Codex worker, TShepherd reads
+only a bounded set of the newest local `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+files and selects the newest rollout whose `session_meta.cwd` exactly matches the
+worker cwd reported by its Herdr agent binding. The latest persisted
+`turn_context` supplies both model and effort. A missing field, file, exact cwd
+binding, unique newest match, or completed bounded read shows `?·?`; values are
+never borrowed from another worker or remembered without current evidence.
+Worker runtime selection is defined in the
 [design document](docs/design.md#implementation); ambiguous worker sessions and
 other harnesses remain unknown. The wide table has one
 **Time** column for the current task; narrow rows show that compact duration
