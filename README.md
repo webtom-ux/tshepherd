@@ -98,21 +98,12 @@ thinking effort. Firstmate's model display reads only the exact Pi v3 session
 path reported by Herdr for the physically verified primary pane; unconfirmed,
 ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
-[Primary chat](docs/design.md#primary-chat). For a Codex worker, TShepherd reads
-only a bounded set of local `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
-files and requires a unique rollout whose `session_meta.cwd` exactly matches the
-worker cwd reported by its Herdr agent binding and which contains timestamped
-activity at or after the verified process start and no later than observation.
-Resumed sessions participate even when their headers predate the process.
-If the complete candidate search exceeds a directory, date, or file limit, the
-result stays unknown; a truncated window never establishes uniqueness. The latest persisted `turn_context`
-supplies model and effort independently: a confirmed model without effort shows
-e.g. `Terra·?`. Missing process or session evidence, ambiguous matches, or an
-incomplete bounded read shows `?·?`; values are
-never borrowed from another worker or remembered without current evidence.
-Worker runtime selection is defined in the
-[design document](docs/design.md#implementation); ambiguous worker sessions and
-other harnesses remain unknown. The wide table has one
+[Primary chat](docs/design.md#primary-chat). Codex workers also show independently
+confirmed model and effort: a confirmed model without effort shows, for example,
+`Terra·?`. Unconfirmed runtime data stays `?·?`. Worker runtime selection and
+its evidence limits are defined in the
+[design document](docs/design.md#implementation); other harnesses remain unknown.
+The wide table has one
 **Time** column for the current task; narrow rows show that compact duration
 in their detail line. Selecting a worker shows both **Session** and **Task** time
 in the footer, while selecting Firstmate shows only its session time. Durations
