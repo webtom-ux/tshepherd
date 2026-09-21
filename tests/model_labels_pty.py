@@ -16,7 +16,7 @@ import tempfile
 import termios
 import time
 
-from test_primary import PrimaryRunner, runtime_record
+from test_primary import PrimaryRunner, pi_entries, write_pi_session
 from fixtures import sample_snapshot
 import tshepherd as app
 
@@ -33,12 +33,16 @@ CASES = (
 
 class FixtureRunner(PrimaryRunner):
     def __init__(self, case):
-        super().__init__()
+        self.temp = tempfile.TemporaryDirectory()
+        session = Path(self.temp.name) / 'primary.jsonl'
+        super().__init__(session)
         model, effort, _ = CASES[case]
         self.worker_runtime = dict(model=model, effort=effort)
         if model:
             provider, model_id = model.split('/', 1)
-            self.primary_runtime = runtime_record(provider, model_id, effort)
+            write_pi_session(session, str(Path.cwd()), pi_entries(provider, model_id, effort))
+        else:
+            self.agent_session = None
 
     def run(self, argv, timeout, env=None):
         if 'focus' in argv:

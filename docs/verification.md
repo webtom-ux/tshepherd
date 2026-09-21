@@ -299,14 +299,16 @@ at 120 columns also flush model/live columns.
 | Wide and narrow view | All seven labels complete at all three widths |
 
 **Evidence limit:** real curses UI and PTY input, **synthetic source**.
-The test-local runner supplies fleet, Herdr, identity-reader, and primary-runtime
-answers; Source applies its production guards. Neither real Firstmate/AI
-processes nor OS owner detection or Herdr client focus are proven.
+The historical run used test-local fleet, Herdr, identity-reader, and
+primary-runtime answers. The current runner instead writes a synthetic Pi
+session file for the production primary runtime reader; fleet, Herdr, and
+identity-reader answers remain synthetic. Neither real Firstmate/AI processes
+nor OS owner detection or Herdr client focus are proven.
 No focus is triggered, and no fleet or lifecycle function is invoked.
-Current source-boundary coverage includes
-`SourceTests.test_probe_collects_exact_session_model_and_effort_only` and
-`PrimaryTests.test_primary_unavailable_runtime_has_no_session_scan_fallback`.
-The primary runtime contract is owned by [Primary chat](design.md#primary-chat);
-the historical PTY result above does not establish live producer compatibility. Cell
-captures and ANSI recordings are created temporarily inside the worktree and
-removed after the test; a full suite was not run.
+Current source-boundary coverage includes worker runtime tests in
+`SourceTests` and the exact reference, bounded parser, race, privacy, replacement,
+and focus-path tests in `PersistedPiSessionTests` and `PrimaryTests`.
+The primary persisted-runtime contract is owned by
+[Primary chat](design.md#primary-chat); the historical PTY result above does not
+establish live Herdr/Pi session compatibility. Cell captures and ANSI recordings
+are created temporarily inside the worktree and removed after the test.
