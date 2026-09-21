@@ -202,8 +202,10 @@ confirmed cwd. A reference does not help establish the primary itself.
 TShepherd opens only that owned regular non-symlink with no-follow semantics.
 The read is limited to 16 MiB, 4 MiB per line, and 4096 entries. It projects only
 entry IDs, parent links, model changes, thinking changes, and assistant
-provider/model fields; prompt, message, tool, summary, and custom payloads are
-never retained, logged, or displayed. Duplicate IDs, cycles, orphan parents,
+provider/model fields into the retained graph. Session lines, including payloads,
+are decoded transiently in memory; prompt, message, tool, summary, and custom
+payloads are excluded from that graph and are never logged or displayed.
+Duplicate IDs, cycles, orphan parents,
 invalid values, malformed headers, and unknown versions fail closed. Settings
 come from Pi's last persisted entry ancestry: model changes and assistant model
 identity update the model, while thinking starts at Pi's effective `off` and is

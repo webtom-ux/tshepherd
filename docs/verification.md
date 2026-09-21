@@ -299,9 +299,11 @@ at 120 columns also flush model/live columns.
 | Wide and narrow view | All seven labels complete at all three widths |
 
 **Evidence limit:** real curses UI and PTY input, **synthetic source**.
-The test-local runner supplies fleet, Herdr, identity-reader, and exact persisted
-Pi-session answers; Source applies its production guards. Neither real
-Firstmate/AI processes nor OS owner detection or Herdr client focus are proven.
+The historical run used test-local fleet, Herdr, identity-reader, and
+primary-runtime answers. The current runner instead writes a synthetic Pi
+session file for the production primary runtime reader; fleet, Herdr, and
+identity-reader answers remain synthetic. Neither real Firstmate/AI processes
+nor OS owner detection or Herdr client focus are proven.
 No focus is triggered, and no fleet or lifecycle function is invoked.
 Current source-boundary coverage includes worker runtime tests in
 `SourceTests` and the exact reference, bounded parser, race, privacy, replacement,
