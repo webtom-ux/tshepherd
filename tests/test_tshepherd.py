@@ -1,6 +1,7 @@
 import json
 import copy
 import contextlib
+from datetime import datetime, timezone
 import io
 import os
 from pathlib import Path
@@ -267,6 +268,7 @@ class FakeRunner:
         self.foreground = None
         self.agent = 'pi'
         self.agent_cwd = str(Path.cwd())
+        self.agent_session = None
 
     def run(self, argv, timeout, env=None):
         self.calls.append(argv)
@@ -290,10 +292,12 @@ class FakeRunner:
                 raise RuntimeError('pane_not_found')
             return {'result': {'type': 'pane_info', 'pane': pane}}
         if command[:2] == ('agent', 'get'):
-            # Real Herdr 0.9 agent_info has no model or effort fields.
-            return {'result': {'type': 'agent_info', 'agent': dict(
-                pane, agent='wrong' if self.bad == 'provider' else self.agent,
-                agent_status=self.native, foreground_cwd=self.agent_cwd, focused=True)}}
+            # Runtime selection comes from a typed session reference, not model fields.
+            agent = dict(pane, agent='wrong' if self.bad == 'provider' else self.agent,
+                         agent_status=self.native, foreground_cwd=self.agent_cwd, focused=True)
+            if self.agent_session is not None:
+                agent['agent_session'] = copy.deepcopy(self.agent_session)
+            return {'result': {'type': 'agent_info', 'agent': agent}}
         if command[:2] == ('pane', 'process-info'):
             processes = self.foreground or [{
                 'name': 'zsh' if self.bad == 'shell' else 'node', 'pid': 321, 'cwd': str(Path.cwd())}]
@@ -368,6 +372,88 @@ class SourceTests(unittest.TestCase):
         self.assertEqual((ambiguous.model, ambiguous.effort), ('', ''))
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
+
+    def test_claude_runtime_uses_exact_herdr_transcript_and_process_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'current.jsonl'
+            now = time.time()
+            started = now - 60
+
+            def stamp(value):
+                return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+            def entry(kind, entry_id, when, model=None, session='session-current', cwd=None):
+                message = {'role': kind}
+                if model is not None:
+                    message['model'] = model
+                return {'type': kind, 'uuid': entry_id, 'parentUuid': None,
+                        'isSidechain': False, 'cwd': cwd or str(Path.cwd()),
+                        'sessionId': session, 'timestamp': stamp(when), 'message': message,
+                        'content': {'secret': 'must-not-be-projected'}}
+
+            path.write_text('\n'.join(json.dumps(value) for value in (
+                entry('assistant', 'old', started - 30, 'claude-haiku-4-5'),
+                entry('user', 'prompt', started + 1),
+                entry('assistant', 'reply', started + 2, 'claude-opus-4-6'))) + '\n')
+            self.runner.agent = 'claude'
+            self.runner.agent_cwd = str(Path.cwd())
+            self.runner.agent_session = {'agent': 'claude', 'source': 'herdr:claude',
+                                         'kind': 'path', 'value': str(path)}
+            self.task['harness'] = 'claude'
+            self.runner.runtime = {
+                'process': {'pid': 321, 'start': int(started * 10**9)},
+                'environment': {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
+                                'HERDR_SESSION': 'named',
+                                'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
+                                'HERDR_PANE_ID': 'w1:p1', 'HERDR_WORKSPACE_ID': 'w1',
+                                'HERDR_TAB_ID': 'w1:t1'},
+                'runtime': {'model': 'launch-profile-must-not-be-used', 'effort': 'high'}}
+            native = self.source.probe(self.task, time.monotonic() + 10)
+            self.assertEqual((native.model, native.effort), ('claude-opus-4-6', ''))
+            self.assertEqual(app.rows_for(
+                self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model, 'Claude·?')
+
+            # A newer prompt has no confirmed responding model yet.
+            with path.open('a') as handle:
+                handle.write(json.dumps(entry('user', 'next-prompt', started + 3)) + '\n')
+            self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
+
+            # The path must remain the exact typed reference from Claude's Herdr hook.
+            self.runner.agent_session['source'] = 'foreign'
+            self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
+
+    def test_claude_transcript_stale_conflicting_and_racing_evidence_is_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session.jsonl'
+            now = time.time()
+            started = now - 10
+
+            def record(entry_id, when, session='session-one', cwd='/worktree'):
+                return {'type': 'assistant', 'uuid': entry_id, 'parentUuid': None,
+                        'isSidechain': False, 'cwd': cwd, 'sessionId': session,
+                        'timestamp': datetime.fromtimestamp(when, timezone.utc).isoformat(),
+                        'message': {'role': 'assistant', 'model': 'claude-sonnet-4-6'}}
+
+            def read(revalidate=lambda: None):
+                return app.read_claude_session_runtime(
+                    str(path), '/worktree', started, revalidate, time.monotonic() + 2)
+
+            path.write_text(json.dumps(record('old', started - 1)) + '\n')
+            self.assertEqual(read(), {'model': '', 'effort': ''})
+            path.write_text('\n'.join(json.dumps(value) for value in (
+                record('one', started + 1),
+                record('two', started + 2, session='session-two'))) + '\n')
+            with self.assertRaises(ValueError):
+                read()
+            path.write_text(json.dumps(record('one', started + 1, cwd='/foreign')) + '\n')
+            with self.assertRaises(ValueError):
+                read()
+            path.write_text(json.dumps(record('one', started + 1)) + '\n')
+            def grow():
+                with path.open('a') as handle:
+                    handle.write('\n')
+            with self.assertRaises(ValueError):
+                read(grow)
 
     def test_codex_runtime_uses_exact_agent_cwd_and_process_generation(self):
         fixture = Path(__file__).with_name('fixtures') / 'codex_sessions'

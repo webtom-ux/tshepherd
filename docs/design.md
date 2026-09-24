@@ -139,6 +139,24 @@ runtime defaults, older remembered observations, filenames, and traversal beyond
 the bounded candidates are never substitutes. This display-only lookup is not
 used by focus and is never run for Pi workers. Four targeted regression tests
 cover the Codex model resolution; a live-lab demonstration is still missing.
+
+For a Claude Code worker, the same uniquely task-bound process and generation
+are required first. The model source is only the exact typed
+`agent_session` path reported by Herdr's Claude `SessionStart` hook on that
+confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=path`). TShepherd
+opens no sibling session or project. It reads a bounded tail from that owned,
+regular, non-symlink transcript and transiently projects only conversation
+identity, cwd, timestamp, role, and model fields; prompts, content, tool data,
+and other payloads are discarded during decoding. A top-level assistant model
+wins only when its session and exact Herdr cwd are consistent, its timestamp is
+in the confirmed process generation, and it is the latest current-generation
+conversation record. A newer user record, old-generation-only data, conflicting
+session/cwd/time evidence, an invalid or changed reference, a racing file or
+process, or exhausted limits leaves the model unknown. The agent reference and
+exact worker process are rechecked after parsing. Claude effort remains unknown
+because this source does not independently establish it. The lookup is
+model-display-only and is skipped by the focus path.
+
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.
