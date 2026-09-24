@@ -198,28 +198,33 @@ def _bounded_session_text(value, limit=PI_SESSION_TEXT):
             and value == value.strip() and all(char.isprintable() for char in value))
 
 
-def _agent_session_path(value, agent, source, label):
-    """Accept only one exact typed path reference reported by Herdr."""
+def agent_session_path(value):
+    """Accept only Herdr's exact typed Pi path reference."""
     if (not isinstance(value, dict) or set(value) != AGENT_SESSION_KEYS
-            or value.get("agent") != agent or value.get("source") != source
+            or value.get("agent") != "pi" or value.get("source") != "herdr:pi"
             or value.get("kind") != "path"):
-        raise ValueError(tr(label + "-Sitzungsreferenz nicht bestätigt"))
+        raise ValueError(tr("Pi-Sitzungsreferenz nicht bestätigt"))
     path = value.get("value")
     if (not isinstance(path, str) or not 0 < len(path) <= 4096
             or not Path(path).is_absolute()
             or any(char in path for char in ("\0", "\n", "\r"))):
-        raise ValueError(tr(label + "-Sitzungspfad ungültig"))
+        raise ValueError(tr("Pi-Sitzungspfad ungültig"))
     return path
 
 
-def agent_session_path(value):
-    """Accept only Herdr's exact typed Pi path reference."""
-    return _agent_session_path(value, "pi", "herdr:pi", "Pi")
-
-
-def claude_agent_session_path(value):
-    """Accept only Herdr's SessionStart-bound Claude transcript path."""
-    return _agent_session_path(value, "claude", "herdr:claude", "Claude")
+def claude_session_path(value, cwd, projects):
+    """Resolve Herdr's SessionStart-bound Claude id to its exact per-cwd transcript."""
+    if (not isinstance(value, dict) or set(value) != AGENT_SESSION_KEYS
+            or value.get("agent") != "claude" or value.get("source") != "herdr:claude"
+            or value.get("kind") != "id"):
+        raise ValueError(tr("Claude-Sitzungsreferenz nicht bestätigt"))
+    session_id = value.get("value")
+    if (not isinstance(session_id, str)
+            or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                                session_id)
+            or not isinstance(cwd, str) or not Path(cwd).is_absolute()):
+        raise ValueError(tr("Claude-Sitzungspfad ungültig"))
+    return str(Path(projects) / re.sub(r"[^A-Za-z0-9]", "-", cwd) / (session_id + ".jsonl"))
 
 
 def _file_stamp(info):
@@ -908,6 +913,7 @@ class Config:
     fixture: str = ""
     quota_axi: str = "quota-axi"
     codex_sessions: str = ""
+    claude_projects: str = ""
 
 
 class Source:
@@ -1006,9 +1012,11 @@ class Source:
             model = effort = ""
             try:
                 cwd = agent_cwd(agent)
-                path = claude_agent_session_path(agent.get("agent_session"))
                 if not cwd:
                     raise ValueError(tr("Claude-Arbeitsverzeichnis nicht bestätigt"))
+                projects = (self.config.claude_projects
+                            or str(Path.home() / ".claude" / "projects"))
+                path = claude_session_path(agent.get("agent_session"), cwd, projects)
 
                 def revalidate():
                     revalidate_agent()

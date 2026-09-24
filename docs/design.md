@@ -142,9 +142,12 @@ cover the Codex model resolution; a live-lab demonstration is still missing.
 
 For a Claude Code worker, the same uniquely task-bound process and generation
 are required first. The model source is only the exact typed
-`agent_session` path reported by Herdr's Claude `SessionStart` hook on that
-confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=path`). TShepherd
-opens no sibling session or project. It reads a bounded tail (at most 4 MiB and
+`agent_session` id reported by Herdr's Claude `SessionStart` hook on that
+confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=id`, a lowercase
+UUID); Herdr 0.9.1 publishes no transcript path. TShepherd opens exactly
+`~/.claude/projects/<Herdr cwd with every non-alphanumeric character as ->/<id>.jsonl`
+and never lists, scans, or falls back to a sibling session or project. It reads
+a bounded tail (at most 4 MiB and
 the newest 4096 lines) from that owned, regular, non-symlink transcript and
 transiently projects only conversation identity, cwd, timestamp, role, and model
 fields plus one flag telling whether a message consists solely of `tool_result`
