@@ -389,9 +389,20 @@ def _project_claude_json_object(pairs):
         if key in seen:
             raise ValueError(tr("Claude-Sitzungsdatei enthält doppelte JSON-Felder"))
         seen.add(key)
-        if key in CLAUDE_STRUCTURAL_KEYS:
+        if key == "content":
+            value[key] = (isinstance(item, list) and bool(item)
+                          and all(isinstance(block, dict) and block.get("type") == "tool_result"
+                                  for block in item))
+        elif key in CLAUDE_STRUCTURAL_KEYS:
             value[key] = item
     return value
+
+
+def _claude_cwd_within(cwd, root):
+    """Accept the exact Herdr cwd or a lexically normalized descendant of it."""
+    if not isinstance(cwd, str) or cwd != os.path.normpath(cwd) or not Path(cwd).is_absolute():
+        return False
+    return cwd == root or Path(root) in Path(cwd).parents
 
 
 def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: None,
@@ -428,14 +439,14 @@ def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: 
                 raise ValueError(tr("Claude-Sitzungszeile überschreitet Grenzen"))
         if raw and not raw.endswith(b"\n"):
             raise ValueError(tr("Claude-Sitzungsdatei während Schreiben gelesen"))
-        lines = raw.splitlines()
+        lines = raw.splitlines()[-CLAUDE_SESSION_ENTRIES:]
         raw = b""
-        if len(lines) > CLAUDE_SESSION_ENTRIES:
-            raise ValueError(tr("Claude-Sitzungsdatei überschreitet Grenzen"))
 
+        session_id = Path(path).stem
+        if not _bounded_session_text(session_id):
+            raise ValueError(tr("Claude-Sitzungsidentität nicht bestätigt"))
         observed = time.time()
-        conversation = []
-        session_id = ""
+        model = None
         seen_ids = set()
         previous_stamp = 0
         for raw_line in lines:
@@ -464,25 +475,25 @@ def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: 
             parent_id = value.get("parentUuid")
             message = value.get("message")
             expected_role = value["type"]
-            if (value.get("isSidechain") is not False or value.get("cwd") != expected_cwd
-                    or not _bounded_session_text(current_session)
+            if (value.get("isSidechain") is not False
+                    or not _claude_cwd_within(value.get("cwd"), expected_cwd)
                     or not _bounded_session_text(entry_id)
                     or (parent_id is not None and not _bounded_session_text(parent_id))
                     or entry_id in seen_ids or not isinstance(message, dict)
                     or message.get("role") != expected_role):
                 raise ValueError(tr("Claude-Sitzungsbindung nicht bestätigt"))
-            if session_id and current_session != session_id:
+            if current_session != session_id:
                 raise ValueError(tr("Claude-Sitzungsidentität widersprüchlich"))
-            session_id = current_session
             seen_ids.add(entry_id)
-            conversation.append((value["type"], message))
+            if expected_role == "assistant":
+                model = message.get("model")
+            elif message.get("content") is not True:
+                model = None
 
         result = {"model": "", "effort": ""}
-        if conversation and conversation[-1][0] == "assistant":
-            model = conversation[-1][1].get("model")
-            if (_bounded_session_text(model)
-                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}", model)):
-                result["model"] = model
+        if (_bounded_session_text(model)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}", model)):
+            result["model"] = model
 
         check_deadline()
         revalidate()

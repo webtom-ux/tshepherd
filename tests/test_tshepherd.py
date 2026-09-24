@@ -375,7 +375,7 @@ class SourceTests(unittest.TestCase):
 
     def test_claude_runtime_uses_exact_herdr_transcript_and_process_generation(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'current.jsonl'
+            path = Path(directory) / 'session-current.jsonl'
             now = time.time()
             started = now - 60
 
@@ -424,7 +424,7 @@ class SourceTests(unittest.TestCase):
 
     def test_claude_transcript_stale_conflicting_and_racing_evidence_is_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'session.jsonl'
+            path = Path(directory) / 'session-one.jsonl'
             now = time.time()
             started = now - 10
 
@@ -454,6 +454,63 @@ class SourceTests(unittest.TestCase):
                     handle.write('\n')
             with self.assertRaises(ValueError):
                 read(grow)
+            renamed = Path(directory) / 'session-other.jsonl'
+            path.rename(renamed)
+            with self.assertRaises(ValueError):
+                app.read_claude_session_runtime(
+                    str(renamed), '/worktree', started, lambda: None, time.monotonic() + 2)
+
+    def test_claude_model_survives_tool_results_subdirectories_and_long_tails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session-one.jsonl'
+            started = time.time() - 60
+            counter = iter(range(10**6))
+
+            def record(kind, when, cwd='/worktree', content=None, model='claude-opus-4-6'):
+                message = {'role': kind}
+                if kind == 'assistant':
+                    message['model'] = model
+                if content is not None:
+                    message['content'] = content
+                return json.dumps({
+                    'type': kind, 'uuid': 'id-%d' % next(counter), 'parentUuid': None,
+                    'isSidechain': False, 'cwd': cwd, 'sessionId': 'session-one',
+                    'timestamp': datetime.fromtimestamp(when, timezone.utc).isoformat(),
+                    'message': message})
+
+            def read():
+                return app.read_claude_session_runtime(
+                    str(path), '/worktree', started, lambda: None, time.monotonic() + 5)['model']
+
+            tool_result = [{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'secret'}]
+            path.write_text('\n'.join((
+                record('user', started + 1, content='run tests'),
+                record('assistant', started + 2, content=[{'type': 'tool_use', 'id': 't1'}]),
+                record('user', started + 3, content=tool_result))) + '\n')
+            self.assertEqual(read(), 'claude-opus-4-6')
+            with path.open('a') as handle:
+                handle.write(record('user', started + 4, content=[{'type': 'text', 'text': 'x'}])
+                             + '\n')
+            self.assertEqual(read(), '')
+
+            path.write_text('\n'.join((
+                record('assistant', started + 1, cwd='/worktree/sub/dir'),
+                record('user', started + 2, cwd='/worktree/sub', content=tool_result))) + '\n')
+            self.assertEqual(read(), 'claude-opus-4-6')
+            for foreign in ('/worktree-other', '/worktree/../etc', '/', 'worktree/sub'):
+                path.write_text(record('assistant', started + 1, cwd=foreign) + '\n')
+                with self.assertRaises(ValueError):
+                    read()
+
+            old = [record('user', started + 1, content='old prompt')]
+            filler = [json.dumps({'type': 'progress'})] * app.CLAUDE_SESSION_ENTRIES
+            path.write_text('\n'.join(old + filler + [
+                record('assistant', started + 2, model='claude-sonnet-4-6')]) + '\n')
+            self.assertEqual(read(), 'claude-sonnet-4-6')
+            path.write_text('\n'.join(
+                [record('assistant', started + 1)] + filler + [
+                    record('user', started + 2, content=tool_result)]) + '\n')
+            self.assertEqual(read(), '')
 
     def test_codex_runtime_uses_exact_agent_cwd_and_process_generation(self):
         fixture = Path(__file__).with_name('fixtures') / 'codex_sessions'
