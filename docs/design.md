@@ -145,8 +145,13 @@ are required first. The model source is only the exact typed
 `agent_session` id reported by Herdr's Claude `SessionStart` hook on that
 confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=id`, a lowercase
 UUID); Herdr 0.9.1 publishes no transcript path. TShepherd opens exactly
-`~/.claude/projects/<Herdr cwd with every non-alphanumeric character as ->/<id>.jsonl`
-and never lists, scans, or falls back to a sibling session or project. It reads
+`~/.claude/projects/<Herdr foreground cwd with every non-alphanumeric character as ->/<id>.jsonl`
+and never lists, scans, or falls back to a sibling session or project. Herdr's
+`cwd` remains the pane/workspace directory used for labels, follow-cwd, and
+restored state, while `foreground_cwd` is the directory of the process currently
+controlling the PTY. Both must be absolute and lexically normalized; the latter
+must equal the uniquely task-bound process cwd and be the former or its strict
+lexical descendant. It reads
 a bounded tail (at most 4 MiB and
 the newest 4096 lines) from that owned, regular, non-symlink transcript and
 transiently projects only conversation identity, cwd, timestamp, role, and model
@@ -155,7 +160,7 @@ blocks; prompts, content, tool data, and other payloads are discarded during
 decoding. Session identity is confirmed independently of the tail: every
 current-generation conversation record must carry the transcript's own session
 id (its filename stem). Because identity is confirmed, a record cwd may be the
-exact Herdr cwd or a lexically normalized descendant of it (Claude follows `cd`
+exact Herdr foreground cwd or a lexically normalized descendant of it (Claude follows `cd`
 inside the worktree); any other cwd rejects the transcript. A top-level assistant
 model wins only when its timestamp is in the confirmed process generation and no
 later current-generation user record is a genuine prompt; tool-result-only user
