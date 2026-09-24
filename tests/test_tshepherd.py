@@ -411,19 +411,23 @@ class SourceTests(unittest.TestCase):
             def stamp(value):
                 return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
-            def entry(kind, entry_id, when, model=None, session=sid, cwd=None):
+            def entry(kind, entry_id, when, model=None, session=sid, cwd=None,
+                      effort=None, per_turn_effort=None):
                 message = {'role': kind}
                 if model is not None:
                     message['model'] = model
                 return {'type': kind, 'uuid': entry_id, 'parentUuid': None,
                         'isSidechain': False, 'cwd': cwd or str(Path.cwd()),
                         'sessionId': session, 'timestamp': stamp(when), 'message': message,
+                        'effort': effort, 'perTurnEffort': per_turn_effort,
                         'content': {'secret': 'must-not-be-projected'}}
 
             path.write_text('\n'.join(json.dumps(value) for value in (
-                entry('assistant', 'old', started - 30, 'claude-haiku-4-5'),
+                entry('assistant', 'old', started - 30, 'claude-haiku-4-5',
+                      effort='high', per_turn_effort='high'),
                 entry('user', 'prompt', started + 1),
-                entry('assistant', 'reply', started + 2, 'claude-opus-4-6'))) + '\n')
+                entry('assistant', 'reply', started + 2, 'claude-opus-4-6',
+                      effort='low', per_turn_effort='low'))) + '\n')
             self.runner.agent = 'claude'
             # Herdr's pane/workspace metadata may name a different checkout;
             # the exact active process cwd selects Claude's per-cwd project.
@@ -441,9 +445,9 @@ class SourceTests(unittest.TestCase):
                                 'HERDR_TAB_ID': 'w1:t1'},
                 'runtime': {'model': 'launch-profile-must-not-be-used', 'effort': 'high'}}
             native = self.source.probe(self.task, time.monotonic() + 10)
-            self.assertEqual((native.model, native.effort), ('claude-opus-4-6', ''))
+            self.assertEqual((native.model, native.effort), ('claude-opus-4-6', 'low'))
             self.assertEqual(app.rows_for(
-                self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model, 'Claude·?')
+                self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model, 'Op4.6·L')
 
             # A newer prompt has no confirmed responding model yet.
             with path.open('a') as handle:
@@ -453,9 +457,10 @@ class SourceTests(unittest.TestCase):
             # The id must remain the exact typed reference from Claude's Herdr hook.
             with path.open('a') as handle:
                 handle.write(json.dumps(entry('assistant', 'again', started + 4,
-                                              'claude-opus-4-6')) + '\n')
-            self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model,
-                             'claude-opus-4-6')
+                                              'claude-opus-4-6', effort='low',
+                                              per_turn_effort='low')) + '\n')
+            again = self.source.probe(self.task, time.monotonic() + 10)
+            self.assertEqual((again.model, again.effort), ('claude-opus-4-6', 'low'))
             for key, value in (('source', 'foreign'), ('kind', 'path'), ('value', '../x'),
                                ('value', str(path))):
                 with self.subTest(key=key, value=value):
@@ -473,10 +478,12 @@ class SourceTests(unittest.TestCase):
             now = time.time()
             started = now - 10
 
-            def record(entry_id, when, session='session-one', cwd='/worktree'):
+            def record(entry_id, when, session='session-one', cwd='/worktree',
+                       effort=None, per_turn_effort=None):
                 return {'type': 'assistant', 'uuid': entry_id, 'parentUuid': None,
                         'isSidechain': False, 'cwd': cwd, 'sessionId': session,
                         'timestamp': datetime.fromtimestamp(when, timezone.utc).isoformat(),
+                        'effort': effort, 'perTurnEffort': per_turn_effort,
                         'message': {'role': 'assistant', 'model': 'claude-sonnet-4-6'}}
 
             def read(revalidate=lambda: None):
@@ -493,6 +500,12 @@ class SourceTests(unittest.TestCase):
             path.write_text(json.dumps(record('one', started + 1, cwd='/foreign')) + '\n')
             with self.assertRaises(ValueError):
                 read()
+            path.write_text(json.dumps(record(
+                'one', started + 1, effort='high', per_turn_effort='high')) + '\n')
+            self.assertEqual(read(), {'model': 'claude-sonnet-4-6', 'effort': 'high'})
+            path.write_text(json.dumps(record(
+                'one', started + 1, effort='high', per_turn_effort='low')) + '\n')
+            self.assertEqual(read(), {'model': 'claude-sonnet-4-6', 'effort': ''})
             path.write_text(json.dumps(record('one', started + 1)) + '\n')
             def grow():
                 with path.open('a') as handle:
@@ -1284,6 +1297,9 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(app.compact_model('sol', ''), 'Sol·?')
         self.assertEqual(app.compact_model('x-ai/GROK-4', 'high'), 'Grok·H')
         self.assertEqual(app.compact_model('anthropic/CLAUDE-3-7', 'medium'), 'Claude·M')
+        self.assertEqual(app.compact_model('claude-opus-5-5', 'low'), 'Op5.5·L')
+        self.assertEqual(app.compact_model('anthropic/claude-sonnet-4-6', 'xhigh'),
+                         'Son4.6·XH')
 
         # Unlisted models use the model-id component, never a role label.
         self.assertEqual(app.compact_model('google/gemini-2.5-pro', 'high'), 'Gemini·H')

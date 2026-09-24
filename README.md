@@ -99,10 +99,11 @@ path reported by Herdr for the physically verified primary pane; unconfirmed,
 ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
 [Primary chat](docs/design.md#primary-chat). Codex workers also show independently
-confirmed model and effort. Claude Code workers show the model from the exact
-transcript of their Herdr-reported session; Claude effort remains `?` when it is not
-independently evidenced. A confirmed model without effort therefore shows, for
-example, `Claude·?` or `Terra·?`. Unconfirmed runtime data stays `?·?`. Worker
+confirmed model and effort. Claude Code workers show the concrete model and
+per-turn effort from the exact transcript of their Herdr-reported session. For
+example, `Op5.5·L` means Claude Opus 5.5 with low effort. A confirmed model without
+independently corroborated effort still shows `?` after the separator, as in
+`Op5.5·?` or `Terra·?`. Unconfirmed runtime data stays `?·?`. Worker
 runtime selection and its evidence limits are defined in the
 [design document](docs/design.md#implementation); other harnesses remain unknown.
 The wide table has one
