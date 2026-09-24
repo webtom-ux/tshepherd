@@ -376,23 +376,25 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
 
-    def test_claude_cwd_uses_contained_exact_foreground_process(self):
-        root = '/trusted/worktree'
-        child = root + '/subdirectory'
+    def test_claude_cwd_uses_exact_foreground_process_not_pane_metadata(self):
+        process_cwd = '/worker/worktree'
+        # Herdr documents cwd as pane/workspace metadata and foreground_cwd as
+        # the process controlling the PTY; no containment exists between them.
         self.assertEqual(app.claude_agent_cwd(
-            {'cwd': root, 'foreground_cwd': child}, child), child)
-        for label, pane_cwd, foreground_cwd, process_cwd in (
-                ('sibling', root, root + '-sibling', root + '-sibling'),
-                ('escaped', root, root + '/sub/../../foreign', root + '/sub/../../foreign'),
-                ('foreign', root, '/foreign/worktree', '/foreign/worktree'),
-                ('conflicting-process', root, child, root + '/other'),
-                ('relative-root', 'trusted/worktree', child, child),
-                ('relative-foreground', root, 'trusted/worktree/sub', 'trusted/worktree/sub'),
-                ('missing-root', None, child, child),
-                ('missing-foreground', root, None, child)):
+            {'cwd': '/registered/project', 'foreground_cwd': process_cwd}, process_cwd),
+            process_cwd)
+        for label, pane_cwd, foreground_cwd, selected_cwd in (
+                ('conflicting-process', '/registered/project', process_cwd, '/worker/sibling'),
+                ('escaped', '/registered/project', '/worker/sub/../../foreign',
+                 '/worker/sub/../../foreign'),
+                ('relative-foreground', '/registered/project', 'worker/worktree',
+                 'worker/worktree'),
+                ('missing-foreground', '/registered/project', None, process_cwd),
+                ('relative-pane', 'registered/project', process_cwd, process_cwd),
+                ('missing-pane', None, process_cwd, process_cwd)):
             with self.subTest(label=label):
                 self.assertEqual(app.claude_agent_cwd(
-                    {'cwd': pane_cwd, 'foreground_cwd': foreground_cwd}, process_cwd), '')
+                    {'cwd': pane_cwd, 'foreground_cwd': foreground_cwd}, selected_cwd), '')
 
     def test_claude_runtime_uses_exact_herdr_transcript_and_process_generation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -423,9 +425,9 @@ class SourceTests(unittest.TestCase):
                 entry('user', 'prompt', started + 1),
                 entry('assistant', 'reply', started + 2, 'claude-opus-4-6'))) + '\n')
             self.runner.agent = 'claude'
-            # Herdr's pane/workspace cwd is a root; the active process cwd selects
-            # Claude's per-cwd project while remaining strictly inside that root.
-            self.runner.agent_root_cwd = str(Path.cwd().parent)
+            # Herdr's pane/workspace metadata may name a different checkout;
+            # the exact active process cwd selects Claude's per-cwd project.
+            self.runner.agent_root_cwd = '/registered/project/tshepherd-public'
             self.runner.agent_cwd = str(Path.cwd())
             self.runner.agent_session = {'agent': 'claude', 'source': 'herdr:claude',
                                          'kind': 'id', 'value': sid}

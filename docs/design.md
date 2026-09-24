@@ -147,11 +147,12 @@ confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=id`, a lowercase
 UUID); Herdr 0.9.1 publishes no transcript path. TShepherd opens exactly
 `~/.claude/projects/<Herdr foreground cwd with every non-alphanumeric character as ->/<id>.jsonl`
 and never lists, scans, or falls back to a sibling session or project. Herdr's
-`cwd` remains the pane/workspace directory used for labels, follow-cwd, and
-restored state, while `foreground_cwd` is the directory of the process currently
-controlling the PTY. Both must be absolute and lexically normalized; the latter
-must equal the uniquely task-bound process cwd and be the former or its strict
-lexical descendant. It reads
+`cwd` remains pane/workspace metadata used for labels, follow-cwd, and restored
+state; it is not a process root and may name a different checkout.
+`foreground_cwd` is the directory of the process currently controlling the PTY.
+Both fields must be absolute and lexically normalized, but no containment is
+inferred between them; `foreground_cwd` must equal the cwd of the uniquely
+task-bound process. It reads
 a bounded tail (at most 4 MiB and
 the newest 4096 lines) from that owned, regular, non-symlink transcript and
 transiently projects only conversation identity, cwd, timestamp, role, and model
