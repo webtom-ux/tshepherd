@@ -22,6 +22,7 @@ import unicodedata
 
 from i18n import set_language, tr
 
+VERSION = "0.1.0"
 SCHEMA = "fm-fleet-snapshot.v1"
 PI_SESSION_BYTES = 16 * 1024 * 1024
 PI_SESSION_LINE_BYTES = 4 * 1024 * 1024
@@ -69,6 +70,40 @@ def clean(value):
     if not isinstance(value, str):
         return ""
     return " ".join("".join(c if c.isprintable() else " " for c in value).split())
+
+
+def source_revision(root=None):
+    """Capture one conservative Git identity for this process at startup."""
+    root = Path(root or Path(__file__).resolve().parent).resolve()
+    options = dict(stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                   timeout=2, check=False)
+    try:
+        identity = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD"], **options)
+        lines = identity.stdout.splitlines() if identity.returncode == 0 else []
+        if (len(lines) != 2 or Path(lines[0]).resolve() != root
+                or not re.fullmatch(r"[0-9a-fA-F]{40,64}", lines[1])):
+            return ""
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=no"],
+            **options)
+        if status.returncode != 0:
+            return ""
+        return lines[1].lower()[:12] + ("+dirty" if status.stdout else "")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+SOURCE_REVISION = source_revision()
+
+
+def version_label(compact=False):
+    revision = SOURCE_REVISION or tr("unknown")
+    if compact and re.fullmatch(r"[0-9a-f]{12}\+dirty", revision):
+        revision = revision[:7] + "+dirty"
+    elif compact and re.fullmatch(r"[0-9a-f]{12}", revision):
+        revision = revision[:7]
+    return f"v{VERSION}" + (" " if compact else " · git ") + revision
 
 
 def compact_model(model, effort):
@@ -1613,13 +1648,13 @@ def render_lines(view, rows, width, height, busy, now):
     total = str(len(rows)) if view.last_success else "?"
     age = f"{max(0, now - view.last_success):.0f}s" if view.last_success else tr("nie")
     wide = width >= 78
-    lines = [blank]
+    lines = [styled(("  TShepherd " + version_label(), 6))]
     labels = ("Worker",) + STATES
     quota_parts = quota_segments(view.quotas, now, compact=width < 100)
     for i, label in enumerate(labels):
         value = total if i == 0 else (str(count[label]) if view.last_success else "?")
         if wide:
-            brand = ("TShepherd", tr("Firstmate fleet"), tr("Live · lokal"), tr("Quota"), "", "")[i]
+            brand = ("", tr("Firstmate fleet"), tr("Live · lokal"), tr("Quota"), "", "")[i]
             prefix = "  " + column(brand, 22)
         else:
             prefix = "  "
@@ -1638,8 +1673,11 @@ def render_lines(view, rows, width, height, busy, now):
             segments += [(tr("   Messung fehlt / nicht bestätigt"), 7)]
         lines.append(styled(*segments))
     if not wide:
-        lines[0] = styled(("  TShepherd · " + tr("Live · lokal"), 6),
-                          (tr("  ·  Erfolg {age}", age=age) + (tr(" · lädt") if busy else ""), 7))
+        identity_label = "  TS " + version_label(compact=True)
+        age_label = (tr(" · Erfolg {age}", age=age)
+                     + (tr(" · lädt") if busy else ""))
+        lines[0] = styled((identity_label, 6),
+                          (age_label if cells(identity_label + age_label) < width else "", 7))
         available = max(0, width - cells("  " + tr("Quota") + " ") - 1)
         tiny = available < 30
         parts = quota_segments(view.quotas, now, compact=True, tiny=tiny) or [("—", 7)]

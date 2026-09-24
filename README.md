@@ -42,6 +42,14 @@ python3 "$HOME/TShepherd/tshepherd.py" \
 its source checkout. They may be the same directory. Both must be supplied.
 If the Herdr CLI is not on your `PATH`, add `--herdr "/path/to/herdr"`.
 
+The top-left header shows the maintained application version and the Git commit
+captured when that process starts. A `+dirty` suffix means tracked source changes
+were present; `unknown`/`unbekannt` means the launched copy could not be tied to
+its repository. The current version starts at `v0.1.0` in `tshepherd.py`.
+Bump it using semantic versioning when preparing a release: patch for compatible
+fixes, minor for compatible features, and major for incompatible behavior.
+Ordinary commits retain the version and are distinguished by their Git ID.
+
 ## Launch with just `TShepherd`
 
 Add this function to `~/.zshrc`. Adjust the script path if you cloned elsewhere,
