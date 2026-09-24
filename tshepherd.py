@@ -33,11 +33,19 @@ CODEX_SESSION_LINE_BYTES = 1024 * 1024
 CODEX_SESSION_FILES = 32
 CODEX_SESSION_DAYS = 4
 CODEX_DIRECTORY_ENTRIES = 128
+CLAUDE_SESSION_BYTES = 4 * 1024 * 1024
+CLAUDE_SESSION_MAX_BYTES = 256 * 1024 * 1024
+CLAUDE_SESSION_LINE_BYTES = 1024 * 1024
+CLAUDE_SESSION_ENTRIES = 4096
 PI_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
 AGENT_SESSION_KEYS = frozenset(("agent", "source", "kind", "value"))
 PI_STRUCTURAL_KEYS = frozenset((
     "type", "version", "id", "cwd", "parentId", "provider", "modelId",
     "thinkingLevel", "message", "role", "model",
+))
+CLAUDE_STRUCTURAL_KEYS = frozenset((
+    "type", "uuid", "parentUuid", "isSidechain", "cwd", "sessionId",
+    "timestamp", "message", "role", "model",
 ))
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
@@ -190,18 +198,28 @@ def _bounded_session_text(value, limit=PI_SESSION_TEXT):
             and value == value.strip() and all(char.isprintable() for char in value))
 
 
-def agent_session_path(value):
-    """Accept only Herdr's exact typed Pi path reference."""
+def _agent_session_path(value, agent, source, label):
+    """Accept only one exact typed path reference reported by Herdr."""
     if (not isinstance(value, dict) or set(value) != AGENT_SESSION_KEYS
-            or value.get("agent") != "pi" or value.get("source") != "herdr:pi"
+            or value.get("agent") != agent or value.get("source") != source
             or value.get("kind") != "path"):
-        raise ValueError(tr("Pi-Sitzungsreferenz nicht bestätigt"))
+        raise ValueError(tr(label + "-Sitzungsreferenz nicht bestätigt"))
     path = value.get("value")
     if (not isinstance(path, str) or not 0 < len(path) <= 4096
             or not Path(path).is_absolute()
             or any(char in path for char in ("\0", "\n", "\r"))):
-        raise ValueError(tr("Pi-Sitzungspfad ungültig"))
+        raise ValueError(tr(label + "-Sitzungspfad ungültig"))
     return path
+
+
+def agent_session_path(value):
+    """Accept only Herdr's exact typed Pi path reference."""
+    return _agent_session_path(value, "pi", "herdr:pi", "Pi")
+
+
+def claude_agent_session_path(value):
+    """Accept only Herdr's SessionStart-bound Claude transcript path."""
+    return _agent_session_path(value, "claude", "herdr:claude", "Claude")
 
 
 def _file_stamp(info):
@@ -364,6 +382,121 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadlin
         os.close(fd)
 
 
+def _project_claude_json_object(pairs):
+    """Discard Claude prompt, tool, result, and metadata payloads while decoding."""
+    value, seen = {}, set()
+    for key, item in pairs:
+        if key in seen:
+            raise ValueError(tr("Claude-Sitzungsdatei enthält doppelte JSON-Felder"))
+        seen.add(key)
+        if key in CLAUDE_STRUCTURAL_KEYS:
+            value[key] = item
+    return value
+
+
+def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: None,
+                                deadline=None):
+    """Read the latest current-generation model from one exact Claude transcript."""
+    if (not isinstance(path, str) or not Path(path).is_absolute()
+            or not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()
+            or not isinstance(started, (int, float)) or isinstance(started, bool)
+            or not math.isfinite(started) or started <= 0
+            or (deadline is not None and (not isinstance(deadline, (int, float))
+                                          or isinstance(deadline, bool)
+                                          or not math.isfinite(deadline)))):
+        return {"model": "", "effort": ""}
+
+    def check_deadline():
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(tr("Claude-Sitzungsmessbudget verbraucht"))
+
+    check_deadline()
+    flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or not 0 < before.st_size <= CLAUDE_SESSION_MAX_BYTES):
+            raise ValueError(tr("Claude-Sitzungsdatei nicht bestätigt"))
+        offset = max(0, before.st_size - CLAUDE_SESSION_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, CLAUDE_SESSION_BYTES)
+        if offset:
+            _partial, separator, raw = raw.partition(b"\n")
+            if not separator:
+                raise ValueError(tr("Claude-Sitzungszeile überschreitet Grenzen"))
+        if raw and not raw.endswith(b"\n"):
+            raise ValueError(tr("Claude-Sitzungsdatei während Schreiben gelesen"))
+        lines = raw.splitlines()
+        raw = b""
+        if len(lines) > CLAUDE_SESSION_ENTRIES:
+            raise ValueError(tr("Claude-Sitzungsdatei überschreitet Grenzen"))
+
+        observed = time.time()
+        conversation = []
+        session_id = ""
+        seen_ids = set()
+        previous_stamp = 0
+        for raw_line in lines:
+            check_deadline()
+            if len(raw_line) > CLAUDE_SESSION_LINE_BYTES:
+                raise ValueError(tr("Claude-Sitzungszeile überschreitet Grenzen"))
+            try:
+                value = json.loads(raw_line, object_pairs_hook=_project_claude_json_object,
+                                   parse_constant=_reject_json_constant)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                raw_line = b""
+                raise ValueError(tr("Claude-Sitzungsdatei fehlerhaft")) from None
+            raw_line = b""
+            if not isinstance(value, dict) or value.get("type") not in ("user", "assistant"):
+                continue
+            stamp = epoch(value.get("timestamp"))
+            if stamp is None:
+                raise ValueError(tr("Claude-Sitzungszeit nicht bestätigt"))
+            if stamp < started:
+                continue
+            if stamp > observed + 2 or stamp < previous_stamp:
+                raise ValueError(tr("Claude-Sitzungszeit widersprüchlich"))
+            previous_stamp = stamp
+            current_session = value.get("sessionId")
+            entry_id = value.get("uuid")
+            parent_id = value.get("parentUuid")
+            message = value.get("message")
+            expected_role = value["type"]
+            if (value.get("isSidechain") is not False or value.get("cwd") != expected_cwd
+                    or not _bounded_session_text(current_session)
+                    or not _bounded_session_text(entry_id)
+                    or (parent_id is not None and not _bounded_session_text(parent_id))
+                    or entry_id in seen_ids or not isinstance(message, dict)
+                    or message.get("role") != expected_role):
+                raise ValueError(tr("Claude-Sitzungsbindung nicht bestätigt"))
+            if session_id and current_session != session_id:
+                raise ValueError(tr("Claude-Sitzungsidentität widersprüchlich"))
+            session_id = current_session
+            seen_ids.add(entry_id)
+            conversation.append((value["type"], message))
+
+        result = {"model": "", "effort": ""}
+        if conversation and conversation[-1][0] == "assistant":
+            model = conversation[-1][1].get("model")
+            if (_bounded_session_text(model)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}", model)):
+                result["model"] = model
+
+        check_deadline()
+        revalidate()
+        check_deadline()
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        if (_file_stamp(before) != _file_stamp(after)
+                or _file_stamp(after) != _file_stamp(current)):
+            raise ValueError(tr("Claude-Sitzungsdatei während Prüfung ersetzt"))
+        return result
+    finally:
+        os.close(fd)
+
+
 def _codex_value(value, *keys):
     """Return one non-conflicting bounded string from a Codex record."""
     found = [value.get(key) for key in keys if value.get(key) not in (None, "")]
@@ -516,7 +649,7 @@ def read_codex_session_runtime(root, expected_cwd, started, deadline):
     return matches[0] if len(matches) == 1 else {}
 
 
-def codex_agent_cwd(agent):
+def agent_cwd(agent):
     """Use only the exact cwd attached to the Herdr agent binding."""
     values = [agent.get(key) for key in ("foreground_cwd", "cwd")
               if agent.get(key) not in (None, "")]
@@ -816,7 +949,8 @@ class Source:
             sys.executable, str(Path(__file__).with_name("primary_identity.py")),
             "--runtime", str(pid), cwd, harness], min(3, remaining))
 
-    def runtime_selection(self, task, foreground, agent, session, pane, found, socket, deadline):
+    def runtime_selection(self, task, foreground, agent, session, pane, found, socket,
+                          deadline, revalidate_agent=lambda: None):
         """Read only exact pane PIDs and accept an environment bound to this task."""
         matches = []
         for process in foreground[:8]:
@@ -838,15 +972,17 @@ class Source:
                         and env.get("HERDR_TAB_ID") == found.get("tab_id")
                         and isinstance(runtime, dict)):
                     started = process_start(result.get("process", {}).get("start"))
-                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort")), started))
+                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort")),
+                                    started, pid, cwd, result))
             except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                 continue
         if len(matches) != 1:
             return "", "", 0
-        model, effort, started = matches[0]
-        if task.get("harness") == "codex":
+        model, effort, started, pid, process_cwd, process_result = matches[0]
+        harness = task.get("harness")
+        if harness == "codex":
             model = effort = ""
-            cwd = codex_agent_cwd(agent)
+            cwd = agent_cwd(agent)
             if cwd:
                 try:
                     root = (Path(self.config.codex_sessions) if self.config.codex_sessions
@@ -855,6 +991,23 @@ class Source:
                     model, effort = clean(runtime.get("model")), clean(runtime.get("effort"))
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                     pass
+        elif harness == "claude":
+            model = effort = ""
+            try:
+                cwd = agent_cwd(agent)
+                path = claude_agent_session_path(agent.get("agent_session"))
+                if not cwd:
+                    raise ValueError(tr("Claude-Arbeitsverzeichnis nicht bestätigt"))
+
+                def revalidate():
+                    revalidate_agent()
+                    if self.process_runtime(pid, process_cwd, harness, deadline) != process_result:
+                        raise ValueError(tr("Claude-Prozess während Prüfung geändert"))
+
+                runtime = read_claude_session_runtime(path, cwd, started, revalidate, deadline)
+                model = clean(runtime.get("model"))
+            except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+                pass
         return model, effort, started
 
     def probe(self, task, deadline, parallel=False):
@@ -902,8 +1055,20 @@ class Source:
                 raise ValueError(tr("Prozessbeleg fehlt / Shell-only (Registrierung eventuell veraltet)"))
             # Focus uses this probe too; runtime display metadata must not extend
             # its latency-sensitive read path.
+            def revalidate_agent():
+                latest_info = call("agent", "get", pane).get("result", {})
+                latest = latest_info.get("agent", {})
+                if (latest_info.get("type") != "agent_info" or latest.get("agent") != expected
+                        or latest.get("pane_id") != pane
+                        or latest.get("agent_session") != agent.get("agent_session")
+                        or any(latest.get(k) != found.get(k)
+                               for k in ("tab_id", "workspace_id", "terminal_id"))):
+                    raise ValueError(tr("Provider/Sitzung während Prüfung geändert"))
+
             model, effort, started = (("", "", 0) if parallel else
-                                      self.runtime_selection(task, foreground, agent, session, pane, found, socket, deadline))
+                                      self.runtime_selection(task, foreground, agent, session, pane,
+                                                             found, socket, deadline,
+                                                             revalidate_agent))
             raw = agent.get("agent_status")
             state = {"working": "working", "idle": "idle", "blocked": "waiting", "done": "done"}.get(raw, "unknown")
             physical = tuple(found[k] for k in ("workspace_id", "tab_id", "terminal_id"))
