@@ -144,15 +144,22 @@ For a Claude Code worker, the same uniquely task-bound process and generation
 are required first. The model source is only the exact typed
 `agent_session` path reported by Herdr's Claude `SessionStart` hook on that
 confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=path`). TShepherd
-opens no sibling session or project. It reads a bounded tail from that owned,
-regular, non-symlink transcript and transiently projects only conversation
-identity, cwd, timestamp, role, and model fields; prompts, content, tool data,
-and other payloads are discarded during decoding. A top-level assistant model
-wins only when its session and exact Herdr cwd are consistent, its timestamp is
-in the confirmed process generation, and it is the latest current-generation
-conversation record. A newer user record, old-generation-only data, conflicting
-session/cwd/time evidence, an invalid or changed reference, a racing file or
-process, or exhausted limits leaves the model unknown. The agent reference and
+opens no sibling session or project. It reads a bounded tail (at most 4 MiB and
+the newest 4096 lines) from that owned, regular, non-symlink transcript and
+transiently projects only conversation identity, cwd, timestamp, role, and model
+fields plus one flag telling whether a message consists solely of `tool_result`
+blocks; prompts, content, tool data, and other payloads are discarded during
+decoding. Session identity is confirmed independently of the tail: every
+current-generation conversation record must carry the transcript's own session
+id (its filename stem). Because identity is confirmed, a record cwd may be the
+exact Herdr cwd or a lexically normalized descendant of it (Claude follows `cd`
+inside the worktree); any other cwd rejects the transcript. A top-level assistant
+model wins only when its timestamp is in the confirmed process generation and no
+later current-generation user record is a genuine prompt; tool-result-only user
+records continue the assistant turn. A newer prompt, a tail without a qualifying
+assistant record, old-generation-only data, conflicting session/cwd/time
+evidence, an invalid or changed reference, a racing file or process, or an
+exhausted budget leaves the model unknown. The agent reference and
 exact worker process are rechecked after parsing. Claude effort remains unknown
 because this source does not independently establish it. The lookup is
 model-display-only and is skipped by the focus path.
