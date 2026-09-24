@@ -32,7 +32,11 @@ switches to the matching Herdr view.
 A Python standard-library application (`tshepherd.py`) avoids extra frameworks.
 `curses.wrapper` owns the terminal lifecycle. Rendering, state projection,
 selection, data access, and polling are separate functions/classes and are
-testable without a live fleet.
+testable without a live fleet. The top-left identity combines the maintained
+semantic version with one Git revision captured once at process startup. Tracked
+changes add `+dirty`; unavailable or contradictory repository identity is
+explicitly unknown. It is never recomputed while running, so a later commit
+cannot relabel already loaded code as that newer revision.
 
 `Source.snapshot` calls the JSON interface of the configured code root with an
 explicit home. Schema, home, and unique worker identities are checked.

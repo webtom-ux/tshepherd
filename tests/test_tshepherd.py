@@ -241,6 +241,23 @@ class MappingTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_source_revision_is_exact_dirty_or_unknown(self):
+        def completed(stdout='', returncode=0):
+            return app.subprocess.CompletedProcess([], returncode, stdout, '')
+
+        sha = '0123456789abcdef0123456789abcdef01234567'
+        with patch.object(app.subprocess, 'run', side_effect=[
+                completed('/repo\n' + sha + '\n'), completed()]):
+            self.assertEqual(app.source_revision('/repo'), '0123456789ab')
+        with patch.object(app.subprocess, 'run', side_effect=[
+                completed('/repo\n' + sha + '\n'), completed(' M tshepherd.py\n')]):
+            self.assertEqual(app.source_revision('/repo'), '0123456789ab+dirty')
+        for identity in (completed('/foreign\n' + sha + '\n'),
+                         completed('/repo\nnot-a-commit\n'), completed(returncode=1)):
+            with self.subTest(stdout=identity.stdout, returncode=identity.returncode), \
+                    patch.object(app.subprocess, 'run', return_value=identity):
+                self.assertEqual(app.source_revision('/repo'), '')
+
     def test_removed_options_are_rejected(self):
         for args in (['--demo'], ['--interval', '1'], ['--stale-after', '60'], ['--timeout', '10']):
             with self.subTest(args=args), patch.object(sys, 'argv', ['tshepherd', *args]):
@@ -1267,8 +1284,9 @@ class QuotaTests(unittest.TestCase):
         for value in ('Codex █████░░░░░ 49%', 'Grok █████░░░░░ 50%', 'Low █░░░░░░░░░ 10%'):
             self.assertIn(value, text)
         self.assertEqual([role for _, value, role in spans if value.endswith('%')], [1, 4, 5])
-        narrow = app.render_lines(view, [], 28, 16, False, now)
-        self.assertIn(app.tr('Live · lokal'), narrow[0][0])
+        with patch.object(app, 'SOURCE_REVISION', '0123456789ab'):
+            narrow = app.render_lines(view, [], 28, 16, False, now)
+        self.assertIn('TS v0.1.0 0123456', narrow[0][0])
         self.assertRegex(narrow[1][0], r'C [█░]{2} 49% G [█░]{2} 50%')
         stale = app.View(last_success=now, quotas=[app.Quota('codex', 80, now - 121)])
         self.assertIn('—', app.render_lines(stale, [], 120, 20, False, now)[4][0])
@@ -1307,6 +1325,15 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(app.compact_model('long-unknown-model', 'high'), 'Long-u·H')
         self.assertEqual(app.compact_model('megrokmodel', 'low'), 'Megrok·L')
         self.assertEqual(app.compact_model('', ''), '?·?')
+
+    def test_version_and_startup_commit_are_top_left(self):
+        view = app.View(last_success=time.time())
+        with patch.object(app, 'SOURCE_REVISION', '0123456789ab'):
+            wide = app.render_lines(view, [], 120, 24, False, time.time())
+        self.assertTrue(wide[0][0].startswith('  TShepherd v0.1.0 · git 0123456789ab'))
+        with patch.object(app, 'SOURCE_REVISION', ''):
+            unknown = app.render_lines(view, [], 120, 24, False, time.time())
+        self.assertIn(app.tr('unknown'), unknown[0][0])
 
     def test_count_blocks_and_aligned_single_line_rows(self):
         snapshot = sample_snapshot(str(Path.cwd()))
