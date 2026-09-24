@@ -676,11 +676,11 @@ def agent_cwd(agent):
 
 
 def claude_agent_cwd(agent, process_cwd):
-    """Bind Herdr's active-process cwd within its pane/workspace cwd."""
-    root = agent.get("cwd")
+    """Bind Herdr's active-process cwd to the exact selected process."""
+    pane_cwd = agent.get("cwd")
     foreground = agent.get("foreground_cwd")
-    if (foreground != process_cwd or not _claude_cwd_within(root, root)
-            or not _claude_cwd_within(foreground, root)):
+    if (foreground != process_cwd or not _claude_cwd_within(pane_cwd, pane_cwd)
+            or not _claude_cwd_within(foreground, foreground)):
         return ""
     return foreground
 
