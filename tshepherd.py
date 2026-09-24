@@ -45,7 +45,7 @@ PI_STRUCTURAL_KEYS = frozenset((
 ))
 CLAUDE_STRUCTURAL_KEYS = frozenset((
     "type", "uuid", "parentUuid", "isSidechain", "cwd", "sessionId",
-    "timestamp", "message", "role", "model",
+    "timestamp", "message", "role", "model", "effort", "perTurnEffort",
 ))
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
@@ -75,8 +75,15 @@ def compact_model(model, effort):
     """Render a fixed model name or a compact name derived from runtime evidence."""
     value = clean(model)
     lowered = value.casefold()
-    name = next((known for known in MODEL_NAMES
-                 if re.search(r"(?:^|[^a-z])" + known.casefold() + r"(?:$|[^a-z])", lowered)), None)
+    claude = re.search(r"(?:^|[/_-])claude-(opus|sonnet|haiku)-(\d+)-(\d+)(?:$|[/_.-])",
+                       lowered)
+    if claude:
+        family = {"opus": "Op", "sonnet": "Son", "haiku": "Hai"}[claude.group(1)]
+        name = family + claude.group(2) + "." + claude.group(3)
+    else:
+        name = next((known for known in MODEL_NAMES
+                     if re.search(r"(?:^|[^a-z])" + known.casefold()
+                                  + r"(?:$|[^a-z])", lowered)), None)
     if name is None and value:
         # Runtime selection is normally provider/model-id. Prefer the model-id,
         # normalize its separators, and bound it to the compact column.
@@ -451,7 +458,7 @@ def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: 
         if not _bounded_session_text(session_id):
             raise ValueError(tr("Claude-Sitzungsidentität nicht bestätigt"))
         observed = time.time()
-        model = None
+        model = effort = None
         seen_ids = set()
         previous_stamp = 0
         for raw_line in lines:
@@ -492,13 +499,20 @@ def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: 
             seen_ids.add(entry_id)
             if expected_role == "assistant":
                 model = message.get("model")
+                configured = value.get("effort")
+                current = value.get("perTurnEffort")
+                effort = (current if configured == current
+                          and _bounded_session_text(current, 16)
+                          and current.casefold() in EFFORT_NAMES else None)
             elif message.get("content") is not True:
-                model = None
+                model = effort = None
 
         result = {"model": "", "effort": ""}
         if (_bounded_session_text(model)
                 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}", model)):
             result["model"] = model
+        if effort:
+            result["effort"] = effort
 
         check_deadline()
         revalidate()
@@ -1035,6 +1049,7 @@ class Source:
 
                 runtime = read_claude_session_runtime(path, cwd, started, revalidate, deadline)
                 model = clean(runtime.get("model"))
+                effort = clean(runtime.get("effort"))
             except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                 pass
         return model, effort, started
