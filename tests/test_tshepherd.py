@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import io
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 import tempfile
@@ -375,14 +376,20 @@ class SourceTests(unittest.TestCase):
 
     def test_claude_runtime_uses_exact_herdr_transcript_and_process_generation(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'session-current.jsonl'
+            # Herdr 0.9.1's Claude SessionStart hook publishes only the session id;
+            # the transcript is Claude's exact per-cwd project file for that id.
+            sid = '4bcfae18-0c1d-4e5f-8a9b-0123456789ab'
+            project = Path(directory) / re.sub(r'[^A-Za-z0-9]', '-', str(Path.cwd()))
+            project.mkdir()
+            path = project / (sid + '.jsonl')
+            self.source.config.claude_projects = directory
             now = time.time()
             started = now - 60
 
             def stamp(value):
                 return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
-            def entry(kind, entry_id, when, model=None, session='session-current', cwd=None):
+            def entry(kind, entry_id, when, model=None, session=sid, cwd=None):
                 message = {'role': kind}
                 if model is not None:
                     message['model'] = model
@@ -398,7 +405,7 @@ class SourceTests(unittest.TestCase):
             self.runner.agent = 'claude'
             self.runner.agent_cwd = str(Path.cwd())
             self.runner.agent_session = {'agent': 'claude', 'source': 'herdr:claude',
-                                         'kind': 'path', 'value': str(path)}
+                                         'kind': 'id', 'value': sid}
             self.task['harness'] = 'claude'
             self.runner.runtime = {
                 'process': {'pid': 321, 'start': int(started * 10**9)},
@@ -418,8 +425,21 @@ class SourceTests(unittest.TestCase):
                 handle.write(json.dumps(entry('user', 'next-prompt', started + 3)) + '\n')
             self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
 
-            # The path must remain the exact typed reference from Claude's Herdr hook.
-            self.runner.agent_session['source'] = 'foreign'
+            # The id must remain the exact typed reference from Claude's Herdr hook.
+            with path.open('a') as handle:
+                handle.write(json.dumps(entry('assistant', 'again', started + 4,
+                                              'claude-opus-4-6')) + '\n')
+            self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model,
+                             'claude-opus-4-6')
+            for key, value in (('source', 'foreign'), ('kind', 'path'), ('value', '../x'),
+                               ('value', str(path))):
+                with self.subTest(key=key, value=value):
+                    reference = dict(self.runner.agent_session, **{key: value})
+                    with patch.object(self.runner, 'agent_session', reference):
+                        self.assertEqual(
+                            self.source.probe(self.task, time.monotonic() + 10).model, '')
+            # Another cwd selects another project file, never this transcript.
+            self.runner.agent_cwd = str(Path.cwd().parent)
             self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
 
     def test_claude_transcript_stale_conflicting_and_racing_evidence_is_unknown(self):
