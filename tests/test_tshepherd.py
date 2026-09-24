@@ -269,6 +269,7 @@ class FakeRunner:
         self.foreground = None
         self.agent = 'pi'
         self.agent_cwd = str(Path.cwd())
+        self.agent_root_cwd = None
         self.agent_session = None
 
     def run(self, argv, timeout, env=None):
@@ -295,7 +296,8 @@ class FakeRunner:
         if command[:2] == ('agent', 'get'):
             # Runtime selection comes from a typed session reference, not model fields.
             agent = dict(pane, agent='wrong' if self.bad == 'provider' else self.agent,
-                         agent_status=self.native, foreground_cwd=self.agent_cwd, focused=True)
+                         agent_status=self.native, cwd=self.agent_root_cwd or self.agent_cwd,
+                         foreground_cwd=self.agent_cwd, focused=True)
             if self.agent_session is not None:
                 agent['agent_session'] = copy.deepcopy(self.agent_session)
             return {'result': {'type': 'agent_info', 'agent': agent}}
@@ -374,6 +376,24 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
 
+    def test_claude_cwd_uses_contained_exact_foreground_process(self):
+        root = '/trusted/worktree'
+        child = root + '/subdirectory'
+        self.assertEqual(app.claude_agent_cwd(
+            {'cwd': root, 'foreground_cwd': child}, child), child)
+        for label, pane_cwd, foreground_cwd, process_cwd in (
+                ('sibling', root, root + '-sibling', root + '-sibling'),
+                ('escaped', root, root + '/sub/../../foreign', root + '/sub/../../foreign'),
+                ('foreign', root, '/foreign/worktree', '/foreign/worktree'),
+                ('conflicting-process', root, child, root + '/other'),
+                ('relative-root', 'trusted/worktree', child, child),
+                ('relative-foreground', root, 'trusted/worktree/sub', 'trusted/worktree/sub'),
+                ('missing-root', None, child, child),
+                ('missing-foreground', root, None, child)):
+            with self.subTest(label=label):
+                self.assertEqual(app.claude_agent_cwd(
+                    {'cwd': pane_cwd, 'foreground_cwd': foreground_cwd}, process_cwd), '')
+
     def test_claude_runtime_uses_exact_herdr_transcript_and_process_generation(self):
         with tempfile.TemporaryDirectory() as directory:
             # Herdr 0.9.1's Claude SessionStart hook publishes only the session id;
@@ -403,6 +423,9 @@ class SourceTests(unittest.TestCase):
                 entry('user', 'prompt', started + 1),
                 entry('assistant', 'reply', started + 2, 'claude-opus-4-6'))) + '\n')
             self.runner.agent = 'claude'
+            # Herdr's pane/workspace cwd is a root; the active process cwd selects
+            # Claude's per-cwd project while remaining strictly inside that root.
+            self.runner.agent_root_cwd = str(Path.cwd().parent)
             self.runner.agent_cwd = str(Path.cwd())
             self.runner.agent_session = {'agent': 'claude', 'source': 'herdr:claude',
                                          'kind': 'id', 'value': sid}

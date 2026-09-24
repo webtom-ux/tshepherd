@@ -675,6 +675,16 @@ def agent_cwd(agent):
     return values[0]
 
 
+def claude_agent_cwd(agent, process_cwd):
+    """Bind Herdr's active-process cwd within its pane/workspace cwd."""
+    root = agent.get("cwd")
+    foreground = agent.get("foreground_cwd")
+    if (foreground != process_cwd or not _claude_cwd_within(root, root)
+            or not _claude_cwd_within(foreground, root)):
+        return ""
+    return foreground
+
+
 def validate_snapshot(data, home):
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise ValueError(tr("Snapshot-Schema unbekannt"))
@@ -1011,7 +1021,7 @@ class Source:
         elif harness == "claude":
             model = effort = ""
             try:
-                cwd = agent_cwd(agent)
+                cwd = claude_agent_cwd(agent, process_cwd)
                 if not cwd:
                     raise ValueError(tr("Claude-Arbeitsverzeichnis nicht bestätigt"))
                 projects = (self.config.claude_projects
@@ -1079,7 +1089,8 @@ class Source:
                 latest = latest_info.get("agent", {})
                 if (latest_info.get("type") != "agent_info" or latest.get("agent") != expected
                         or latest.get("pane_id") != pane
-                        or latest.get("agent_session") != agent.get("agent_session")
+                        or any(latest.get(k) != agent.get(k)
+                               for k in ("agent_session", "cwd", "foreground_cwd"))
                         or any(latest.get(k) != found.get(k)
                                for k in ("tab_id", "workspace_id", "terminal_id"))):
                     raise ValueError(tr("Provider/Sitzung während Prüfung geändert"))
