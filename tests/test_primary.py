@@ -360,6 +360,32 @@ class PersistedPiSessionTests(unittest.TestCase):
         write_pi_session(self.path, self.cwd, entries, **header)
         return app.read_pi_session_runtime(str(self.path), self.cwd)
 
+    def test_oversized_line_keeps_evidenced_model_and_thinking(self):
+        payload = 'PRIVATE_SCREENSHOT_ü' * (app.PI_SESSION_LINE_BYTES // 16)
+        entries = pi_entries(provider='xai', model='grok-4.7') + [
+            {'type': 'message', 'id': 'screenshot', 'parentId': 'effort',
+             'timestamp': '2026-09-24T21:44:32.924Z',
+             'message': {'role': 'toolResult', 'toolCallId': 'call',
+                         'content': [{'type': 'image', 'data': payload}]}},
+            {'type': 'message', 'id': 'reply', 'parentId': 'screenshot',
+             'message': {'role': 'assistant', 'provider': 'xai', 'model': 'grok-4.7',
+                         'content': []}},
+        ]
+        write_pi_session(self.path, self.cwd, entries)
+        self.assertGreater(max(len(line) for line in self.path.read_bytes().splitlines()),
+                           app.PI_SESSION_LINE_BYTES)
+        self.assertEqual(app.read_pi_session_runtime(str(self.path), self.cwd),
+                         {'model': 'xai/grok-4.7', 'effort': 'medium'})
+
+        entries[2]['message'] = {'role': 'assistant', 'content': [{'data': payload}],
+                                 'provider': 'xai', 'model': 'grok-4.7'}
+        with self.assertRaises(ValueError):
+            self.read(entries)
+        entries[2] = {'type': 'message', 'id': 'screenshot', 'parentId': 'missing',
+                      'message': {'role': 'user', 'content': payload}}
+        with self.assertRaises(ValueError):
+            self.read(entries)
+
     def test_active_tail_uses_branch_model_assistant_and_effective_thinking(self):
         entries = [
             {'type': 'model_change', 'id': 'root-model', 'parentId': None,
