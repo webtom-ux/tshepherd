@@ -99,7 +99,8 @@ Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh
 and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
 runtime model and thinking effort (`Sol·M` means Sol with medium effort). Known
 Astra, Terra, Sol, Luna, Grok, and Claude names use fixed labels, in that priority
-order when several match. Other non-empty runtime model IDs get a label of at
+order when several match; versioned Claude Opus/Sonnet/Haiku IDs instead show
+family and version, such as `Op5.5`. Other non-empty runtime model IDs get a label of at
 most six characters derived from their model-ID component; no manual mapping
 is needed. `?` marks an empty or unconfirmed model, or missing or unrecognized
 thinking effort. Firstmate's model display reads only the exact Pi v3 session
