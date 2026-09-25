@@ -22,6 +22,7 @@ import unicodedata
 
 from i18n import set_language, tr
 
+VERSION = "0.1.0"
 SCHEMA = "fm-fleet-snapshot.v1"
 PI_SESSION_BYTES = 16 * 1024 * 1024
 PI_SESSION_LINE_BYTES = 4 * 1024 * 1024
@@ -33,11 +34,19 @@ CODEX_SESSION_LINE_BYTES = 1024 * 1024
 CODEX_SESSION_FILES = 32
 CODEX_SESSION_DAYS = 4
 CODEX_DIRECTORY_ENTRIES = 128
+CLAUDE_SESSION_BYTES = 4 * 1024 * 1024
+CLAUDE_SESSION_MAX_BYTES = 256 * 1024 * 1024
+CLAUDE_SESSION_LINE_BYTES = 1024 * 1024
+CLAUDE_SESSION_ENTRIES = 4096
 PI_EFFORTS = frozenset(("off", "minimal", "low", "medium", "high", "xhigh", "max"))
 AGENT_SESSION_KEYS = frozenset(("agent", "source", "kind", "value"))
 PI_STRUCTURAL_KEYS = frozenset((
     "type", "version", "id", "cwd", "parentId", "provider", "modelId",
     "thinkingLevel", "message", "role", "model",
+))
+CLAUDE_STRUCTURAL_KEYS = frozenset((
+    "type", "uuid", "parentUuid", "isSidechain", "cwd", "sessionId",
+    "timestamp", "message", "role", "model", "effort", "perTurnEffort",
 ))
 STATES = ("working", "waiting", "idle", "completed", "unknown")
 LIVE_STATES = ("working", "waiting", "idle", "done", "unknown")
@@ -63,12 +72,53 @@ def clean(value):
     return " ".join("".join(c if c.isprintable() else " " for c in value).split())
 
 
+def source_revision(root=None):
+    """Capture one conservative Git identity for this process at startup."""
+    root = Path(root or Path(__file__).resolve().parent).resolve()
+    options = dict(stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                   timeout=2, check=False)
+    try:
+        identity = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel", "HEAD"], **options)
+        lines = identity.stdout.splitlines() if identity.returncode == 0 else []
+        if (len(lines) != 2 or Path(lines[0]).resolve() != root
+                or not re.fullmatch(r"[0-9a-fA-F]{40,64}", lines[1])):
+            return ""
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=no"],
+            **options)
+        if status.returncode != 0:
+            return ""
+        return lines[1].lower()[:12] + ("+dirty" if status.stdout else "")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+SOURCE_REVISION = source_revision()
+
+
+def version_label(compact=False):
+    revision = SOURCE_REVISION or tr("unknown")
+    if compact and re.fullmatch(r"[0-9a-f]{12}\+dirty", revision):
+        revision = revision[:7] + "+dirty"
+    elif compact and re.fullmatch(r"[0-9a-f]{12}", revision):
+        revision = revision[:7]
+    return f"v{VERSION}" + (" " if compact else " · git ") + revision
+
+
 def compact_model(model, effort):
     """Render a fixed model name or a compact name derived from runtime evidence."""
     value = clean(model)
     lowered = value.casefold()
-    name = next((known for known in MODEL_NAMES
-                 if re.search(r"(?:^|[^a-z])" + known.casefold() + r"(?:$|[^a-z])", lowered)), None)
+    claude = re.search(r"(?:^|[/_-])claude-(opus|sonnet|haiku)-(\d+)-(\d{1,2})(?:$|[/_.-])",
+                       lowered)
+    if claude:
+        family = {"opus": "Op", "sonnet": "Son", "haiku": "Hai"}[claude.group(1)]
+        name = family + claude.group(2) + "." + claude.group(3)
+    else:
+        name = next((known for known in MODEL_NAMES
+                     if re.search(r"(?:^|[^a-z])" + known.casefold()
+                                  + r"(?:$|[^a-z])", lowered)), None)
     if name is None and value:
         # Runtime selection is normally provider/model-id. Prefer the model-id,
         # normalize its separators, and bound it to the compact column.
@@ -202,6 +252,21 @@ def agent_session_path(value):
             or any(char in path for char in ("\0", "\n", "\r"))):
         raise ValueError(tr("Pi-Sitzungspfad ungültig"))
     return path
+
+
+def claude_session_path(value, cwd, projects):
+    """Resolve Herdr's SessionStart-bound Claude id to its exact per-cwd transcript."""
+    if (not isinstance(value, dict) or set(value) != AGENT_SESSION_KEYS
+            or value.get("agent") != "claude" or value.get("source") != "herdr:claude"
+            or value.get("kind") != "id"):
+        raise ValueError(tr("Claude-Sitzungsreferenz nicht bestätigt"))
+    session_id = value.get("value")
+    if (not isinstance(session_id, str)
+            or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                                session_id)
+            or not isinstance(cwd, str) or not Path(cwd).is_absolute()):
+        raise ValueError(tr("Claude-Sitzungspfad ungültig"))
+    return str(Path(projects) / re.sub(r"[^A-Za-z0-9]", "-", cwd) / (session_id + ".jsonl"))
 
 
 def _file_stamp(info):
@@ -364,6 +429,139 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadlin
         os.close(fd)
 
 
+def _project_claude_json_object(pairs):
+    """Discard Claude prompt, tool, result, and metadata payloads while decoding."""
+    value, seen = {}, set()
+    for key, item in pairs:
+        if key in seen:
+            raise ValueError(tr("Claude-Sitzungsdatei enthält doppelte JSON-Felder"))
+        seen.add(key)
+        if key == "content":
+            value[key] = (isinstance(item, list) and bool(item)
+                          and all(isinstance(block, dict) and block.get("type") == "tool_result"
+                                  for block in item))
+        elif key in CLAUDE_STRUCTURAL_KEYS:
+            value[key] = item
+    return value
+
+
+def _claude_cwd_within(cwd, root):
+    """Accept the exact Herdr cwd or a lexically normalized descendant of it."""
+    if not isinstance(cwd, str) or cwd != os.path.normpath(cwd) or not Path(cwd).is_absolute():
+        return False
+    return cwd == root or Path(root) in Path(cwd).parents
+
+
+def read_claude_session_runtime(path, expected_cwd, started, revalidate=lambda: None,
+                                deadline=None):
+    """Read the latest current-generation model from one exact Claude transcript."""
+    if (not isinstance(path, str) or not Path(path).is_absolute()
+            or not isinstance(expected_cwd, str) or not Path(expected_cwd).is_absolute()
+            or not isinstance(started, (int, float)) or isinstance(started, bool)
+            or not math.isfinite(started) or started <= 0
+            or (deadline is not None and (not isinstance(deadline, (int, float))
+                                          or isinstance(deadline, bool)
+                                          or not math.isfinite(deadline)))):
+        return {"model": "", "effort": ""}
+
+    def check_deadline():
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(tr("Claude-Sitzungsmessbudget verbraucht"))
+
+    check_deadline()
+    flags = (os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or not 0 < before.st_size <= CLAUDE_SESSION_MAX_BYTES):
+            raise ValueError(tr("Claude-Sitzungsdatei nicht bestätigt"))
+        offset = max(0, before.st_size - CLAUDE_SESSION_BYTES)
+        os.lseek(fd, offset, os.SEEK_SET)
+        raw = os.read(fd, CLAUDE_SESSION_BYTES)
+        if offset:
+            _partial, separator, raw = raw.partition(b"\n")
+            if not separator:
+                raise ValueError(tr("Claude-Sitzungszeile überschreitet Grenzen"))
+        if raw and not raw.endswith(b"\n"):
+            raise ValueError(tr("Claude-Sitzungsdatei während Schreiben gelesen"))
+        lines = raw.splitlines()[-CLAUDE_SESSION_ENTRIES:]
+        raw = b""
+
+        session_id = Path(path).stem
+        if not _bounded_session_text(session_id):
+            raise ValueError(tr("Claude-Sitzungsidentität nicht bestätigt"))
+        observed = time.time()
+        model = effort = None
+        seen_ids = set()
+        previous_stamp = 0
+        for raw_line in lines:
+            check_deadline()
+            if len(raw_line) > CLAUDE_SESSION_LINE_BYTES:
+                raise ValueError(tr("Claude-Sitzungszeile überschreitet Grenzen"))
+            try:
+                value = json.loads(raw_line, object_pairs_hook=_project_claude_json_object,
+                                   parse_constant=_reject_json_constant)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                raw_line = b""
+                raise ValueError(tr("Claude-Sitzungsdatei fehlerhaft")) from None
+            raw_line = b""
+            if not isinstance(value, dict) or value.get("type") not in ("user", "assistant"):
+                continue
+            stamp = epoch(value.get("timestamp"))
+            if stamp is None:
+                raise ValueError(tr("Claude-Sitzungszeit nicht bestätigt"))
+            if stamp < started:
+                continue
+            if stamp > observed + 2 or stamp < previous_stamp:
+                raise ValueError(tr("Claude-Sitzungszeit widersprüchlich"))
+            previous_stamp = stamp
+            current_session = value.get("sessionId")
+            entry_id = value.get("uuid")
+            parent_id = value.get("parentUuid")
+            message = value.get("message")
+            expected_role = value["type"]
+            if (value.get("isSidechain") is not False
+                    or not _claude_cwd_within(value.get("cwd"), expected_cwd)
+                    or not _bounded_session_text(entry_id)
+                    or (parent_id is not None and not _bounded_session_text(parent_id))
+                    or entry_id in seen_ids or not isinstance(message, dict)
+                    or message.get("role") != expected_role):
+                raise ValueError(tr("Claude-Sitzungsbindung nicht bestätigt"))
+            if current_session != session_id:
+                raise ValueError(tr("Claude-Sitzungsidentität widersprüchlich"))
+            seen_ids.add(entry_id)
+            if expected_role == "assistant":
+                model = message.get("model")
+                configured = value.get("effort")
+                current = value.get("perTurnEffort")
+                effort = (current if configured == current
+                          and _bounded_session_text(current, 16)
+                          and current.casefold() in EFFORT_NAMES else None)
+            elif message.get("content") is not True:
+                model = effort = None
+
+        result = {"model": "", "effort": ""}
+        if (_bounded_session_text(model)
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}", model)):
+            result["model"] = model
+        if effort:
+            result["effort"] = effort
+
+        check_deadline()
+        revalidate()
+        check_deadline()
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        if (_file_stamp(before) != _file_stamp(after)
+                or _file_stamp(after) != _file_stamp(current)):
+            raise ValueError(tr("Claude-Sitzungsdatei während Prüfung ersetzt"))
+        return result
+    finally:
+        os.close(fd)
+
+
 def _codex_value(value, *keys):
     """Return one non-conflicting bounded string from a Codex record."""
     found = [value.get(key) for key in keys if value.get(key) not in (None, "")]
@@ -516,7 +714,7 @@ def read_codex_session_runtime(root, expected_cwd, started, deadline):
     return matches[0] if len(matches) == 1 else {}
 
 
-def codex_agent_cwd(agent):
+def agent_cwd(agent):
     """Use only the exact cwd attached to the Herdr agent binding."""
     values = [agent.get(key) for key in ("foreground_cwd", "cwd")
               if agent.get(key) not in (None, "")]
@@ -524,6 +722,16 @@ def codex_agent_cwd(agent):
                           for value in values) or len(set(values)) != 1):
         return ""
     return values[0]
+
+
+def claude_agent_cwd(agent, process_cwd):
+    """Bind Herdr's active-process cwd to the exact selected process."""
+    pane_cwd = agent.get("cwd")
+    foreground = agent.get("foreground_cwd")
+    if (foreground != process_cwd or not _claude_cwd_within(pane_cwd, pane_cwd)
+            or not _claude_cwd_within(foreground, foreground)):
+        return ""
+    return foreground
 
 
 def validate_snapshot(data, home):
@@ -764,6 +972,7 @@ class Config:
     fixture: str = ""
     quota_axi: str = "quota-axi"
     codex_sessions: str = ""
+    claude_projects: str = ""
 
 
 class Source:
@@ -816,7 +1025,8 @@ class Source:
             sys.executable, str(Path(__file__).with_name("primary_identity.py")),
             "--runtime", str(pid), cwd, harness], min(3, remaining))
 
-    def runtime_selection(self, task, foreground, agent, session, pane, found, socket, deadline):
+    def runtime_selection(self, task, foreground, agent, session, pane, found, socket,
+                          deadline, revalidate_agent=lambda: None):
         """Read only exact pane PIDs and accept an environment bound to this task."""
         matches = []
         for process in foreground[:8]:
@@ -838,15 +1048,17 @@ class Source:
                         and env.get("HERDR_TAB_ID") == found.get("tab_id")
                         and isinstance(runtime, dict)):
                     started = process_start(result.get("process", {}).get("start"))
-                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort")), started))
+                    matches.append((clean(runtime.get("model")), clean(runtime.get("effort")),
+                                    started, pid, cwd, result))
             except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                 continue
         if len(matches) != 1:
             return "", "", 0
-        model, effort, started = matches[0]
-        if task.get("harness") == "codex":
+        model, effort, started, pid, process_cwd, process_result = matches[0]
+        harness = task.get("harness")
+        if harness == "codex":
             model = effort = ""
-            cwd = codex_agent_cwd(agent)
+            cwd = agent_cwd(agent)
             if cwd:
                 try:
                     root = (Path(self.config.codex_sessions) if self.config.codex_sessions
@@ -855,6 +1067,26 @@ class Source:
                     model, effort = clean(runtime.get("model")), clean(runtime.get("effort"))
                 except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
                     pass
+        elif harness == "claude":
+            model = effort = ""
+            try:
+                cwd = claude_agent_cwd(agent, process_cwd)
+                if not cwd:
+                    raise ValueError(tr("Claude-Arbeitsverzeichnis nicht bestätigt"))
+                projects = (self.config.claude_projects
+                            or str(Path.home() / ".claude" / "projects"))
+                path = claude_session_path(agent.get("agent_session"), cwd, projects)
+
+                def revalidate():
+                    revalidate_agent()
+                    if self.process_runtime(pid, process_cwd, harness, deadline) != process_result:
+                        raise ValueError(tr("Claude-Prozess während Prüfung geändert"))
+
+                runtime = read_claude_session_runtime(path, cwd, started, revalidate, deadline)
+                model = clean(runtime.get("model"))
+                effort = clean(runtime.get("effort"))
+            except (ValueError, OSError, RuntimeError, TimeoutError, AttributeError, TypeError):
+                pass
         return model, effort, started
 
     def probe(self, task, deadline, parallel=False):
@@ -902,8 +1134,21 @@ class Source:
                 raise ValueError(tr("Prozessbeleg fehlt / Shell-only (Registrierung eventuell veraltet)"))
             # Focus uses this probe too; runtime display metadata must not extend
             # its latency-sensitive read path.
+            def revalidate_agent():
+                latest_info = call("agent", "get", pane).get("result", {})
+                latest = latest_info.get("agent", {})
+                if (latest_info.get("type") != "agent_info" or latest.get("agent") != expected
+                        or latest.get("pane_id") != pane
+                        or any(latest.get(k) != agent.get(k)
+                               for k in ("agent_session", "cwd", "foreground_cwd"))
+                        or any(latest.get(k) != found.get(k)
+                               for k in ("tab_id", "workspace_id", "terminal_id"))):
+                    raise ValueError(tr("Provider/Sitzung während Prüfung geändert"))
+
             model, effort, started = (("", "", 0) if parallel else
-                                      self.runtime_selection(task, foreground, agent, session, pane, found, socket, deadline))
+                                      self.runtime_selection(task, foreground, agent, session, pane,
+                                                             found, socket, deadline,
+                                                             revalidate_agent))
             raw = agent.get("agent_status")
             state = {"working": "working", "idle": "idle", "blocked": "waiting", "done": "done"}.get(raw, "unknown")
             physical = tuple(found[k] for k in ("workspace_id", "tab_id", "terminal_id"))
@@ -1403,13 +1648,13 @@ def render_lines(view, rows, width, height, busy, now):
     total = str(len(rows)) if view.last_success else "?"
     age = f"{max(0, now - view.last_success):.0f}s" if view.last_success else tr("nie")
     wide = width >= 78
-    lines = [blank]
+    lines = [styled(("  TShepherd " + version_label(), 6))]
     labels = ("Worker",) + STATES
     quota_parts = quota_segments(view.quotas, now, compact=width < 100)
     for i, label in enumerate(labels):
         value = total if i == 0 else (str(count[label]) if view.last_success else "?")
         if wide:
-            brand = ("TShepherd", tr("Firstmate fleet"), tr("Live · lokal"), tr("Quota"), "", "")[i]
+            brand = ("", tr("Firstmate fleet"), tr("Live · lokal"), tr("Quota"), "", "")[i]
             prefix = "  " + column(brand, 22)
         else:
             prefix = "  "
@@ -1428,8 +1673,11 @@ def render_lines(view, rows, width, height, busy, now):
             segments += [(tr("   Messung fehlt / nicht bestätigt"), 7)]
         lines.append(styled(*segments))
     if not wide:
-        lines[0] = styled(("  TShepherd · " + tr("Live · lokal"), 6),
-                          (tr("  ·  Erfolg {age}", age=age) + (tr(" · lädt") if busy else ""), 7))
+        identity_label = "  TS " + version_label(compact=True)
+        age_label = (tr(" · Erfolg {age}", age=age)
+                     + (tr(" · lädt") if busy else ""))
+        lines[0] = styled((identity_label, 6),
+                          (age_label if cells(identity_label + age_label) < width else "", 7))
         available = max(0, width - cells("  " + tr("Quota") + " ") - 1)
         tiny = available < 30
         parts = quota_segments(view.quotas, now, compact=True, tiny=tiny) or [("—", 7)]

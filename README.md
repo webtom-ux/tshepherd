@@ -42,6 +42,14 @@ python3 "$HOME/TShepherd/tshepherd.py" \
 its source checkout. They may be the same directory. Both must be supplied.
 If the Herdr CLI is not on your `PATH`, add `--herdr "/path/to/herdr"`.
 
+The top-left header shows the maintained application version and the Git commit
+captured when that process starts. A `+dirty` suffix means tracked source changes
+were present; `unknown`/`unklar` means the launched copy could not be tied to
+its repository. The current version starts at `v0.1.0` in `tshepherd.py`.
+Bump it using semantic versioning when preparing a release: patch for compatible
+fixes, minor for compatible features, and major for incompatible behavior.
+Ordinary commits retain the version and are distinguished by their Git ID.
+
 ## Launch with just `TShepherd`
 
 Add this function to `~/.zshrc`. Adjust the script path if you cloned elsewhere,
@@ -91,7 +99,8 @@ Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh
 and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
 runtime model and thinking effort (`Sol·M` means Sol with medium effort). Known
 Astra, Terra, Sol, Luna, Grok, and Claude names use fixed labels, in that priority
-order when several match. Other non-empty runtime model IDs get a label of at
+order when several match; versioned Claude Opus/Sonnet/Haiku IDs instead show
+family and version, such as `Op5.5`. Other non-empty runtime model IDs get a label of at
 most six characters derived from their model-ID component; no manual mapping
 is needed. `?` marks an empty or unconfirmed model, or missing or unrecognized
 thinking effort. Firstmate's model display reads only the exact Pi v3 session
@@ -99,9 +108,12 @@ path reported by Herdr for the physically verified primary pane; unconfirmed,
 ephemeral, or not-yet-persisted runtime data shows `?·?`. It does not require a
 Firstmate runtime helper. Its ownership and privacy contract is defined under
 [Primary chat](docs/design.md#primary-chat). Codex workers also show independently
-confirmed model and effort: a confirmed model without effort shows, for example,
-`Terra·?`. Unconfirmed runtime data stays `?·?`. Worker runtime selection and
-its evidence limits are defined in the
+confirmed model and effort. Claude Code workers show the concrete model and
+per-turn effort from the exact transcript of their Herdr-reported session. For
+example, `Op5.5·L` means Claude Opus 5.5 with low effort. A confirmed model without
+independently corroborated effort still shows `?` after the separator, as in
+`Op5.5·?` or `Terra·?`. Unconfirmed runtime data stays `?·?`. Worker
+runtime selection and its evidence limits are defined in the
 [design document](docs/design.md#implementation); other harnesses remain unknown.
 The wide table has one
 **Time** column for the current task; narrow rows show that compact duration
