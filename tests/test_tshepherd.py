@@ -1,9 +1,11 @@
 import json
 import copy
 import contextlib
+from datetime import datetime, timezone
 import io
 import os
 from pathlib import Path
+import re
 import sys
 import threading
 import tempfile
@@ -239,6 +241,23 @@ class MappingTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_source_revision_is_exact_dirty_or_unknown(self):
+        def completed(stdout='', returncode=0):
+            return app.subprocess.CompletedProcess([], returncode, stdout, '')
+
+        sha = '0123456789abcdef0123456789abcdef01234567'
+        with patch.object(app.subprocess, 'run', side_effect=[
+                completed('/repo\n' + sha + '\n'), completed()]):
+            self.assertEqual(app.source_revision('/repo'), '0123456789ab')
+        with patch.object(app.subprocess, 'run', side_effect=[
+                completed('/repo\n' + sha + '\n'), completed(' M tshepherd.py\n')]):
+            self.assertEqual(app.source_revision('/repo'), '0123456789ab+dirty')
+        for identity in (completed('/foreign\n' + sha + '\n'),
+                         completed('/repo\nnot-a-commit\n'), completed(returncode=1)):
+            with self.subTest(stdout=identity.stdout, returncode=identity.returncode), \
+                    patch.object(app.subprocess, 'run', return_value=identity):
+                self.assertEqual(app.source_revision('/repo'), '')
+
     def test_removed_options_are_rejected(self):
         for args in (['--demo'], ['--interval', '1'], ['--stale-after', '60'], ['--timeout', '10']):
             with self.subTest(args=args), patch.object(sys, 'argv', ['tshepherd', *args]):
@@ -267,6 +286,8 @@ class FakeRunner:
         self.foreground = None
         self.agent = 'pi'
         self.agent_cwd = str(Path.cwd())
+        self.agent_root_cwd = None
+        self.agent_session = None
 
     def run(self, argv, timeout, env=None):
         self.calls.append(argv)
@@ -290,10 +311,13 @@ class FakeRunner:
                 raise RuntimeError('pane_not_found')
             return {'result': {'type': 'pane_info', 'pane': pane}}
         if command[:2] == ('agent', 'get'):
-            # Real Herdr 0.9 agent_info has no model or effort fields.
-            return {'result': {'type': 'agent_info', 'agent': dict(
-                pane, agent='wrong' if self.bad == 'provider' else self.agent,
-                agent_status=self.native, foreground_cwd=self.agent_cwd, focused=True)}}
+            # Runtime selection comes from a typed session reference, not model fields.
+            agent = dict(pane, agent='wrong' if self.bad == 'provider' else self.agent,
+                         agent_status=self.native, cwd=self.agent_root_cwd or self.agent_cwd,
+                         foreground_cwd=self.agent_cwd, focused=True)
+            if self.agent_session is not None:
+                agent['agent_session'] = copy.deepcopy(self.agent_session)
+            return {'result': {'type': 'agent_info', 'agent': agent}}
         if command[:2] == ('pane', 'process-info'):
             processes = self.foreground or [{
                 'name': 'zsh' if self.bad == 'shell' else 'node', 'pid': 321, 'cwd': str(Path.cwd())}]
@@ -368,6 +392,200 @@ class SourceTests(unittest.TestCase):
         self.assertEqual((ambiguous.model, ambiguous.effort), ('', ''))
         self.assertEqual(app.rows_for(self.snapshot, {self.task['id']: ambiguous}, time.time(), 45)[0].model,
                          '?·?')
+
+    def test_claude_cwd_uses_exact_foreground_process_not_pane_metadata(self):
+        process_cwd = '/worker/worktree'
+        # Herdr documents cwd as pane/workspace metadata and foreground_cwd as
+        # the process controlling the PTY; no containment exists between them.
+        self.assertEqual(app.claude_agent_cwd(
+            {'cwd': '/registered/project', 'foreground_cwd': process_cwd}, process_cwd),
+            process_cwd)
+        for label, pane_cwd, foreground_cwd, selected_cwd in (
+                ('conflicting-process', '/registered/project', process_cwd, '/worker/sibling'),
+                ('escaped', '/registered/project', '/worker/sub/../../foreign',
+                 '/worker/sub/../../foreign'),
+                ('relative-foreground', '/registered/project', 'worker/worktree',
+                 'worker/worktree'),
+                ('missing-foreground', '/registered/project', None, process_cwd),
+                ('relative-pane', 'registered/project', process_cwd, process_cwd),
+                ('missing-pane', None, process_cwd, process_cwd)):
+            with self.subTest(label=label):
+                self.assertEqual(app.claude_agent_cwd(
+                    {'cwd': pane_cwd, 'foreground_cwd': foreground_cwd}, selected_cwd), '')
+
+    def test_claude_runtime_uses_exact_herdr_transcript_and_process_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Herdr 0.9.1's Claude SessionStart hook publishes only the session id;
+            # the transcript is Claude's exact per-cwd project file for that id.
+            sid = '4bcfae18-0c1d-4e5f-8a9b-0123456789ab'
+            project = Path(directory) / re.sub(r'[^A-Za-z0-9]', '-', str(Path.cwd()))
+            project.mkdir()
+            path = project / (sid + '.jsonl')
+            self.source.config.claude_projects = directory
+            now = time.time()
+            started = now - 60
+
+            def stamp(value):
+                return datetime.fromtimestamp(value, timezone.utc).isoformat()
+
+            def entry(kind, entry_id, when, model=None, session=sid, cwd=None,
+                      effort=None, per_turn_effort=None):
+                message = {'role': kind}
+                if model is not None:
+                    message['model'] = model
+                return {'type': kind, 'uuid': entry_id, 'parentUuid': None,
+                        'isSidechain': False, 'cwd': cwd or str(Path.cwd()),
+                        'sessionId': session, 'timestamp': stamp(when), 'message': message,
+                        'effort': effort, 'perTurnEffort': per_turn_effort,
+                        'content': {'secret': 'must-not-be-projected'}}
+
+            path.write_text('\n'.join(json.dumps(value) for value in (
+                entry('assistant', 'old', started - 30, 'claude-haiku-4-5',
+                      effort='high', per_turn_effort='high'),
+                entry('user', 'prompt', started + 1),
+                entry('assistant', 'reply', started + 2, 'claude-opus-4-6',
+                      effort='low', per_turn_effort='low'))) + '\n')
+            self.runner.agent = 'claude'
+            # Herdr's pane/workspace metadata may name a different checkout;
+            # the exact active process cwd selects Claude's per-cwd project.
+            self.runner.agent_root_cwd = '/registered/project/tshepherd-public'
+            self.runner.agent_cwd = str(Path.cwd())
+            self.runner.agent_session = {'agent': 'claude', 'source': 'herdr:claude',
+                                         'kind': 'id', 'value': sid}
+            self.task['harness'] = 'claude'
+            self.runner.runtime = {
+                'process': {'pid': 321, 'start': int(started * 10**9)},
+                'environment': {'FM_TASK_ID': self.task['id'], 'HERDR_ENV': '1',
+                                'HERDR_SESSION': 'named',
+                                'HERDR_SOCKET_PATH': '/fixture/herdr/sessions/named/herdr.sock',
+                                'HERDR_PANE_ID': 'w1:p1', 'HERDR_WORKSPACE_ID': 'w1',
+                                'HERDR_TAB_ID': 'w1:t1'},
+                'runtime': {'model': 'launch-profile-must-not-be-used', 'effort': 'high'}}
+            native = self.source.probe(self.task, time.monotonic() + 10)
+            self.assertEqual((native.model, native.effort), ('claude-opus-4-6', 'low'))
+            self.assertEqual(app.rows_for(
+                self.snapshot, {self.task['id']: native}, time.time(), 45)[0].model, 'Op4.6·L')
+
+            # A newer prompt has no confirmed responding model yet.
+            with path.open('a') as handle:
+                handle.write(json.dumps(entry('user', 'next-prompt', started + 3)) + '\n')
+            self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
+
+            # The id must remain the exact typed reference from Claude's Herdr hook.
+            with path.open('a') as handle:
+                handle.write(json.dumps(entry('assistant', 'again', started + 4,
+                                              'claude-opus-4-6', effort='low',
+                                              per_turn_effort='low')) + '\n')
+            again = self.source.probe(self.task, time.monotonic() + 10)
+            self.assertEqual((again.model, again.effort), ('claude-opus-4-6', 'low'))
+            for key, value in (('source', 'foreign'), ('kind', 'path'), ('value', '../x'),
+                               ('value', str(path))):
+                with self.subTest(key=key, value=value):
+                    reference = dict(self.runner.agent_session, **{key: value})
+                    with patch.object(self.runner, 'agent_session', reference):
+                        self.assertEqual(
+                            self.source.probe(self.task, time.monotonic() + 10).model, '')
+            # Another cwd selects another project file, never this transcript.
+            self.runner.agent_cwd = str(Path.cwd().parent)
+            self.assertEqual(self.source.probe(self.task, time.monotonic() + 10).model, '')
+
+    def test_claude_transcript_stale_conflicting_and_racing_evidence_is_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session-one.jsonl'
+            now = time.time()
+            started = now - 10
+
+            def record(entry_id, when, session='session-one', cwd='/worktree',
+                       effort=None, per_turn_effort=None):
+                return {'type': 'assistant', 'uuid': entry_id, 'parentUuid': None,
+                        'isSidechain': False, 'cwd': cwd, 'sessionId': session,
+                        'timestamp': datetime.fromtimestamp(when, timezone.utc).isoformat(),
+                        'effort': effort, 'perTurnEffort': per_turn_effort,
+                        'message': {'role': 'assistant', 'model': 'claude-sonnet-4-6'}}
+
+            def read(revalidate=lambda: None):
+                return app.read_claude_session_runtime(
+                    str(path), '/worktree', started, revalidate, time.monotonic() + 2)
+
+            path.write_text(json.dumps(record('old', started - 1)) + '\n')
+            self.assertEqual(read(), {'model': '', 'effort': ''})
+            path.write_text('\n'.join(json.dumps(value) for value in (
+                record('one', started + 1),
+                record('two', started + 2, session='session-two'))) + '\n')
+            with self.assertRaises(ValueError):
+                read()
+            path.write_text(json.dumps(record('one', started + 1, cwd='/foreign')) + '\n')
+            with self.assertRaises(ValueError):
+                read()
+            path.write_text(json.dumps(record(
+                'one', started + 1, effort='high', per_turn_effort='high')) + '\n')
+            self.assertEqual(read(), {'model': 'claude-sonnet-4-6', 'effort': 'high'})
+            path.write_text(json.dumps(record(
+                'one', started + 1, effort='high', per_turn_effort='low')) + '\n')
+            self.assertEqual(read(), {'model': 'claude-sonnet-4-6', 'effort': ''})
+            path.write_text(json.dumps(record('one', started + 1)) + '\n')
+            def grow():
+                with path.open('a') as handle:
+                    handle.write('\n')
+            with self.assertRaises(ValueError):
+                read(grow)
+            renamed = Path(directory) / 'session-other.jsonl'
+            path.rename(renamed)
+            with self.assertRaises(ValueError):
+                app.read_claude_session_runtime(
+                    str(renamed), '/worktree', started, lambda: None, time.monotonic() + 2)
+
+    def test_claude_model_survives_tool_results_subdirectories_and_long_tails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'session-one.jsonl'
+            started = time.time() - 60
+            counter = iter(range(10**6))
+
+            def record(kind, when, cwd='/worktree', content=None, model='claude-opus-4-6'):
+                message = {'role': kind}
+                if kind == 'assistant':
+                    message['model'] = model
+                if content is not None:
+                    message['content'] = content
+                return json.dumps({
+                    'type': kind, 'uuid': 'id-%d' % next(counter), 'parentUuid': None,
+                    'isSidechain': False, 'cwd': cwd, 'sessionId': 'session-one',
+                    'timestamp': datetime.fromtimestamp(when, timezone.utc).isoformat(),
+                    'message': message})
+
+            def read():
+                return app.read_claude_session_runtime(
+                    str(path), '/worktree', started, lambda: None, time.monotonic() + 5)['model']
+
+            tool_result = [{'type': 'tool_result', 'tool_use_id': 't1', 'content': 'secret'}]
+            path.write_text('\n'.join((
+                record('user', started + 1, content='run tests'),
+                record('assistant', started + 2, content=[{'type': 'tool_use', 'id': 't1'}]),
+                record('user', started + 3, content=tool_result))) + '\n')
+            self.assertEqual(read(), 'claude-opus-4-6')
+            with path.open('a') as handle:
+                handle.write(record('user', started + 4, content=[{'type': 'text', 'text': 'x'}])
+                             + '\n')
+            self.assertEqual(read(), '')
+
+            path.write_text('\n'.join((
+                record('assistant', started + 1, cwd='/worktree/sub/dir'),
+                record('user', started + 2, cwd='/worktree/sub', content=tool_result))) + '\n')
+            self.assertEqual(read(), 'claude-opus-4-6')
+            for foreign in ('/worktree-other', '/worktree/../etc', '/', 'worktree/sub'):
+                path.write_text(record('assistant', started + 1, cwd=foreign) + '\n')
+                with self.assertRaises(ValueError):
+                    read()
+
+            old = [record('user', started + 1, content='old prompt')]
+            filler = [json.dumps({'type': 'progress'})] * app.CLAUDE_SESSION_ENTRIES
+            path.write_text('\n'.join(old + filler + [
+                record('assistant', started + 2, model='claude-sonnet-4-6')]) + '\n')
+            self.assertEqual(read(), 'claude-sonnet-4-6')
+            path.write_text('\n'.join(
+                [record('assistant', started + 1)] + filler + [
+                    record('user', started + 2, content=tool_result)]) + '\n')
+            self.assertEqual(read(), '')
 
     def test_codex_runtime_uses_exact_agent_cwd_and_process_generation(self):
         fixture = Path(__file__).with_name('fixtures') / 'codex_sessions'
@@ -1066,8 +1284,11 @@ class QuotaTests(unittest.TestCase):
         for value in ('Codex █████░░░░░ 49%', 'Grok █████░░░░░ 50%', 'Low █░░░░░░░░░ 10%'):
             self.assertIn(value, text)
         self.assertEqual([role for _, value, role in spans if value.endswith('%')], [1, 4, 5])
-        narrow = app.render_lines(view, [], 28, 16, False, now)
-        self.assertIn(app.tr('Live · lokal'), narrow[0][0])
+        with patch.object(app, 'SOURCE_REVISION', '0123456789ab'):
+            narrow = app.render_lines(view, [], 28, 16, False, now)
+        self.assertIn('TS v0.1.0 0123456', narrow[0][0])
+        app.set_language('en')
+        self.assertIn(' · success 0s', app.render_lines(view, [], 60, 16, False, now)[0][0])
         self.assertRegex(narrow[1][0], r'C [█░]{2} 49% G [█░]{2} 50%')
         stale = app.View(last_success=now, quotas=[app.Quota('codex', 80, now - 121)])
         self.assertIn('—', app.render_lines(stale, [], 120, 20, False, now)[4][0])
@@ -1096,6 +1317,12 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(app.compact_model('sol', ''), 'Sol·?')
         self.assertEqual(app.compact_model('x-ai/GROK-4', 'high'), 'Grok·H')
         self.assertEqual(app.compact_model('anthropic/CLAUDE-3-7', 'medium'), 'Claude·M')
+        self.assertEqual(app.compact_model('claude-opus-5-5', 'low'), 'Op5.5·L')
+        self.assertEqual(app.compact_model('anthropic/claude-sonnet-4-6', 'xhigh'),
+                         'Son4.6·XH')
+        self.assertEqual(app.compact_model('claude-sonnet-4-20250514', 'high'), 'Claude·H')
+        self.assertEqual(app.compact_model('claude-opus-4-20250514', ''), 'Claude·?')
+        self.assertEqual(app.compact_model('claude-sonnet-4-5-20250929', 'low'), 'Son4.5·L')
 
         # Unlisted models use the model-id component, never a role label.
         self.assertEqual(app.compact_model('google/gemini-2.5-pro', 'high'), 'Gemini·H')
@@ -1103,6 +1330,15 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(app.compact_model('long-unknown-model', 'high'), 'Long-u·H')
         self.assertEqual(app.compact_model('megrokmodel', 'low'), 'Megrok·L')
         self.assertEqual(app.compact_model('', ''), '?·?')
+
+    def test_version_and_startup_commit_are_top_left(self):
+        view = app.View(last_success=time.time())
+        with patch.object(app, 'SOURCE_REVISION', '0123456789ab'):
+            wide = app.render_lines(view, [], 120, 24, False, time.time())
+        self.assertTrue(wide[0][0].startswith('  TShepherd v0.1.0 · git 0123456789ab'))
+        with patch.object(app, 'SOURCE_REVISION', ''):
+            unknown = app.render_lines(view, [], 120, 24, False, time.time())
+        self.assertIn(app.tr('unknown'), unknown[0][0])
 
     def test_count_blocks_and_aligned_single_line_rows(self):
         snapshot = sample_snapshot(str(Path.cwd()))

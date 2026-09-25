@@ -32,7 +32,11 @@ switches to the matching Herdr view.
 A Python standard-library application (`tshepherd.py`) avoids extra frameworks.
 `curses.wrapper` owns the terminal lifecycle. Rendering, state projection,
 selection, data access, and polling are separate functions/classes and are
-testable without a live fleet.
+testable without a live fleet. The top-left identity combines the maintained
+semantic version with one Git revision captured once at process startup. Tracked
+changes add `+dirty`; unavailable or contradictory repository identity is
+explicitly unknown. It is never recomputed while running, so a later commit
+cannot relabel already loaded code as that newer revision.
 
 `Source.snapshot` calls the JSON interface of the configured code root with an
 explicit home. Schema, home, and unique worker identities are checked.
@@ -139,6 +143,44 @@ runtime defaults, older remembered observations, filenames, and traversal beyond
 the bounded candidates are never substitutes. This display-only lookup is not
 used by focus and is never run for Pi workers. Four targeted regression tests
 cover the Codex model resolution; a live-lab demonstration is still missing.
+
+For a Claude Code worker, the same uniquely task-bound process and generation
+are required first. The model source is only the exact typed
+`agent_session` id reported by Herdr's Claude `SessionStart` hook on that
+confirmed pane (`agent=claude`, `source=herdr:claude`, `kind=id`, a lowercase
+UUID); Herdr 0.9.1 publishes no transcript path. TShepherd opens exactly
+`~/.claude/projects/<Herdr foreground cwd with every non-alphanumeric character as ->/<id>.jsonl`
+and never lists, scans, or falls back to a sibling session or project. Herdr's
+`cwd` remains pane/workspace metadata used for labels, follow-cwd, and restored
+state; it is not a process root and may name a different checkout.
+`foreground_cwd` is the directory of the process currently controlling the PTY.
+Both fields must be absolute and lexically normalized, but no containment is
+inferred between them; `foreground_cwd` must equal the cwd of the uniquely
+task-bound process. It reads
+a bounded tail (at most 4 MiB and
+the newest 4096 lines) from that owned, regular, non-symlink transcript and
+transiently projects only conversation identity, cwd, timestamp, role, model,
+and the top-level `effort`/`perTurnEffort` fields plus one flag telling whether
+an entry consists solely of `tool_result` blocks; prompts, content, tool data,
+and other payloads are discarded during
+decoding. Session identity is confirmed independently of the tail: every
+current-generation conversation record must carry the transcript's own session
+id (its filename stem). An assistant record supplies per-turn effort only when
+its bounded `effort` and effective `perTurnEffort` values agree and name a
+supported display level; missing or conflicting values leave effort unknown
+without inventing a default. Because identity is confirmed, a record cwd may be
+the exact Herdr foreground cwd or a lexically normalized descendant of it (Claude follows `cd`
+inside the worktree); any other cwd rejects the transcript. A top-level assistant
+model wins only when its timestamp is in the confirmed process generation and no
+later current-generation user record is a genuine prompt; tool-result-only user
+records continue the assistant turn. A newer prompt, a tail without a qualifying
+assistant record, old-generation-only data, conflicting session/cwd/time
+evidence, an invalid or changed reference, a racing file or process, or an
+exhausted budget leaves the model unknown. A newer genuine prompt also clears
+its prior effort; tool-result-only records preserve both. The agent reference
+and exact worker process are rechecked after parsing. The lookup is
+model-display-only and is skipped by the focus path.
+
 User-facing meaning of the model/effort labels is described in the
 [README](../README.md#launch-with-just-tshepherd); derivation is implemented by
 `compact_model` in `tshepherd.py`.
