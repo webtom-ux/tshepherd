@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """TShepherd: observational Firstmate fleet TUI (Python standard library only)."""
 import argparse
+import codecs
 from concurrent.futures import ThreadPoolExecutor
 import curses
 from dataclasses import dataclass, field, replace
@@ -28,6 +29,7 @@ PI_SESSION_BYTES = 256 * 1024 * 1024
 PI_SESSION_LINE_BYTES = 4 * 1024 * 1024
 PI_SESSION_ENTRIES = 4096
 PI_SESSION_TEXT = 512
+PI_SESSION_PREFIX_BYTES = 64 * 1024
 PRIMARY_RUNTIME_RESERVE = 3.1
 CODEX_SESSION_BYTES = 4 * 1024 * 1024
 CODEX_SESSION_LINE_BYTES = 1024 * 1024
@@ -289,6 +291,49 @@ def _reject_json_constant(_value):
     raise ValueError(tr("Pi-Sitzungsdatei enthält ungültige JSON-Werte"))
 
 
+def _project_leading_session_fields(text, index=0, nested=True):
+    """Project leading structural scalars of one truncated JSON object.
+
+    A composite value ends projection, except the entry's own ``message`` object.
+    """
+    decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
+    space = re.compile(r"[ \t\n\r]*")
+    index = space.match(text, index).end()
+    if text[index:index + 1] != "{":
+        raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
+    value, seen = {}, set()
+    index += 1
+    while True:
+        index = space.match(text, index).end()
+        if text[index:index + 1] != '"':
+            return value
+        try:
+            key, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            return value
+        index = space.match(text, index).end()
+        if text[index:index + 1] != ":":
+            return value
+        index = space.match(text, index + 1).end()
+        if key in seen:
+            raise ValueError(tr("Pi-Sitzungsdatei enthält doppelte JSON-Felder"))
+        seen.add(key)
+        if text[index:index + 1] in ("{", "["):
+            if nested and key == "message" and text[index] == "{":
+                value[key] = _project_leading_session_fields(text, index, False)
+            return value
+        try:
+            item, index = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            return value
+        if key in PI_STRUCTURAL_KEYS:
+            value[key] = item
+        index = space.match(text, index).end()
+        if text[index:index + 1] != ",":
+            return value
+        index += 1
+
+
 def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadline=None):
     """Project runtime settings from one exact, stable Pi v3 JSONL descriptor.
 
@@ -325,16 +370,37 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadlin
                 if not raw:
                     break
                 total += len(raw)
-                if (len(raw) > PI_SESSION_LINE_BYTES or total > PI_SESSION_BYTES
-                        or number > PI_SESSION_ENTRIES):
-                    raise ValueError(tr("Pi-Sitzungsdatei überschreitet Grenzen"))
-                try:
-                    value = json.loads(raw, object_pairs_hook=_project_session_json_object,
-                                       parse_constant=_reject_json_constant)
-                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                value = None
+                if len(raw) > PI_SESSION_LINE_BYTES:
+                    # Project an oversized line from a bounded prefix and drain
+                    # the remainder without retaining or decoding its payload.
+                    prefix, end = raw[:PI_SESSION_PREFIX_BYTES], raw[-1:]
                     raw = b""
-                    raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft")) from None
-                raw = b""  # Do not retain a transcript-bearing input line.
+                    while end != b"\n" and total <= PI_SESSION_BYTES:
+                        check_deadline()
+                        chunk = handle.readline(PI_SESSION_LINE_BYTES)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        end = chunk[-1:]
+                        chunk = b""
+                    try:
+                        text = codecs.getincrementaldecoder("utf-8")().decode(prefix)
+                        value = _project_leading_session_fields(text)
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                        raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft")) from None
+                    finally:
+                        prefix = text = b""
+                if total > PI_SESSION_BYTES or number > PI_SESSION_ENTRIES:
+                    raise ValueError(tr("Pi-Sitzungsdatei überschreitet Grenzen"))
+                if value is None:
+                    try:
+                        value = json.loads(raw, object_pairs_hook=_project_session_json_object,
+                                           parse_constant=_reject_json_constant)
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                        raw = b""
+                        raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft")) from None
+                    raw = b""  # Do not retain a transcript-bearing input line.
                 if not isinstance(value, dict):
                     raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
                 if number == 0:
