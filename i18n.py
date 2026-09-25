@@ -85,7 +85,7 @@ EN = {
     "   bereit für Eingabe; Antwort ungesehen": "   ready for input; response unseen",
     "   Aufgabe done; überlappt mit Live": "   task done; overlaps with live",
     "   Messung fehlt / nicht bestätigt": "   measurement missing / unconfirmed",
-    "  ·  Erfolg {age}": "  ·  success {age}",
+    " · Erfolg {age}": " · success {age}",
     " · lädt": " · loading",
     "nicht verfügbar": "unavailable",
     "Aufgabe": "Task",

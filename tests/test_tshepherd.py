@@ -1287,6 +1287,8 @@ class QuotaTests(unittest.TestCase):
         with patch.object(app, 'SOURCE_REVISION', '0123456789ab'):
             narrow = app.render_lines(view, [], 28, 16, False, now)
         self.assertIn('TS v0.1.0 0123456', narrow[0][0])
+        app.set_language('en')
+        self.assertIn(' · success 0s', app.render_lines(view, [], 60, 16, False, now)[0][0])
         self.assertRegex(narrow[1][0], r'C [█░]{2} 49% G [█░]{2} 50%')
         stale = app.View(last_success=now, quotas=[app.Quota('codex', 80, now - 121)])
         self.assertIn('—', app.render_lines(stale, [], 120, 20, False, now)[4][0])
