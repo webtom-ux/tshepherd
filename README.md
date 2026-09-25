@@ -44,7 +44,7 @@ If the Herdr CLI is not on your `PATH`, add `--herdr "/path/to/herdr"`.
 
 The top-left header shows the maintained application version and the Git commit
 captured when that process starts. A `+dirty` suffix means tracked source changes
-were present; `unknown`/`unbekannt` means the launched copy could not be tied to
+were present; `unknown`/`unklar` means the launched copy could not be tied to
 its repository. The current version starts at `v0.1.0` in `tshepherd.py`.
 Bump it using semantic versioning when preparing a release: patch for compatible
 fixes, minor for compatible features, and major for incompatible behavior.

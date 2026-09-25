@@ -1318,6 +1318,9 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(app.compact_model('claude-opus-5-5', 'low'), 'Op5.5·L')
         self.assertEqual(app.compact_model('anthropic/claude-sonnet-4-6', 'xhigh'),
                          'Son4.6·XH')
+        self.assertEqual(app.compact_model('claude-sonnet-4-20250514', 'high'), 'Claude·H')
+        self.assertEqual(app.compact_model('claude-opus-4-20250514', ''), 'Claude·?')
+        self.assertEqual(app.compact_model('claude-sonnet-4-5-20250929', 'low'), 'Son4.5·L')
 
         # Unlisted models use the model-id component, never a role label.
         self.assertEqual(app.compact_model('google/gemini-2.5-pro', 'high'), 'Gemini·H')
