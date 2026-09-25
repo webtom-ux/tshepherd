@@ -438,7 +438,8 @@ class PersistedPiSessionTests(unittest.TestCase):
             app.read_pi_session_runtime(str(link), self.cwd)
         with patch.object(app.os, 'getuid', return_value=os.getuid() + 1), self.assertRaises(ValueError):
             app.read_pi_session_runtime(str(self.path), self.cwd)
-        self.path.write_bytes(b'x' * (app.PI_SESSION_BYTES + 1))
+        with self.path.open('wb') as handle:
+            handle.truncate(app.PI_SESSION_BYTES + 1)
         with self.assertRaises(ValueError):
             app.read_pi_session_runtime(str(self.path), self.cwd)
         header = json.dumps({'type': 'session', 'version': 3, 'id': 's', 'cwd': self.cwd}) + '\n'
@@ -638,6 +639,30 @@ class PrimaryTests(unittest.TestCase):
         replaced = self.measured()
         self.assertTrue(replaced.physical)
         self.assertEqual(app.compact_model(replaced.model, replaced.effort), 'Astra·M')
+
+    def test_oversized_valid_session_resolves_only_with_confirmed_identity(self):
+        legacy_limit = 16 * 1024 * 1024
+        private_payload = 'CAPTAINS_PRIVATE_OVERSIZED_PAYLOAD_' + 'x' * (3500 * 1024)
+        entries = pi_entries(model='gpt-6-astra')
+        parent = 'effort'
+        for number in range(5):
+            entry_id = f'large-{number}'
+            entries.append({'type': 'custom', 'id': entry_id, 'parentId': parent,
+                            'data': private_payload})
+            parent = entry_id
+        write_pi_session(self.session, str(Path.cwd()), entries)
+        self.assertGreater(self.session.stat().st_size, legacy_limit)
+
+        confirmed = self.measured()
+        self.assertTrue(confirmed.physical, confirmed.reason)
+        self.assertEqual(app.compact_model(confirmed.model, confirmed.effort), 'Astra·M')
+        self.assertNotIn('CAPTAINS_PRIVATE_OVERSIZED_PAYLOAD_', repr(confirmed))
+
+        self.runner.agent_session = None
+        unknown = self.measured()
+        self.assertTrue(unknown.physical, unknown.reason)
+        self.assertEqual((unknown.model, unknown.effort), ('', ''))
+        self.assertEqual(app.compact_model(unknown.model, unknown.effort), '?·?')
 
     def test_persisted_model_and_effort_appends_update_next_poll(self):
         first = self.measured()
