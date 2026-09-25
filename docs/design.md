@@ -267,10 +267,12 @@ TShepherd opens only that owned regular non-symlink with no-follow semantics.
 The read is limited to 256 MiB and 4096 entries. The larger file bound
 accommodates long-lived primary sessions while each line is streamed and
 immediately discarded after structural projection. A line over 4 MiB, such as a
-pasted screenshot or large tool result, is projected only from the leading
-top-level scalars and `message` scalars in its first 64 KiB; the rest is drained
-undecoded. Such an entry must still yield its ID, parent link, type, and any
-required model fields, otherwise it fails closed. It projects only
+pasted screenshot or large tool result, is projected only from the top-level
+scalars in its first and last 64 KiB, whether its identity precedes or follows
+the payload; the rest is drained undecoded. That entry keeps only its ID, parent
+link, type, and scalar runtime fields, so it links the ancestry without adding
+assistant model evidence and the surrounding entries still determine the
+settings. It projects only
 entry IDs, parent links, model changes, thinking changes, and assistant
 provider/model fields into the retained graph. Session lines, including payloads,
 are decoded transiently in memory; prompt, message, tool, summary, and custom
