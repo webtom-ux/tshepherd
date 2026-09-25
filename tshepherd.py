@@ -349,6 +349,8 @@ def _project_trailing_session_fields(text):
             slash = start
             while slash > 0 and text[slash - 1] == "\\":
                 slash -= 1
+            if slash == 0:
+                return 0
             if (start - slash) % 2 == 0:
                 return start
 

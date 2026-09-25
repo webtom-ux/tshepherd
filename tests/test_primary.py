@@ -404,6 +404,22 @@ class PersistedPiSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.read(entries)
 
+    def test_oversized_suffix_window_inside_escape_run_keeps_runtime(self):
+        entries = pi_entries(provider='xai', model='grok-4.7')
+
+        def escaped_line(filler):
+            entries[2:] = [{'type': 'custom_message', 'customType': 'note',
+                            'content': 'x' * app.PI_SESSION_LINE_BYTES + '\\"' + 'a' * filler,
+                            'display': True, 'id': 'escaped', 'parentId': 'effort',
+                            'timestamp': '2026-09-24T21:44:32.924Z'}]
+            line = json.dumps(entries[2]) + '\n'
+            return len(line) - (line.rindex('\\\\\\"') + 1)
+
+        filler = 1000
+        filler -= escaped_line(filler) - app.PI_SESSION_PREFIX_BYTES
+        self.assertEqual(escaped_line(filler), app.PI_SESSION_PREFIX_BYTES)
+        self.assertEqual(self.read(entries), {'model': 'xai/grok-4.7', 'effort': 'medium'})
+
     def test_active_tail_uses_branch_model_assistant_and_effective_thinking(self):
         entries = [
             {'type': 'model_change', 'id': 'root-model', 'parentId': None,
