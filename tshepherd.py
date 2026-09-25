@@ -110,7 +110,7 @@ def compact_model(model, effort):
     """Render a fixed model name or a compact name derived from runtime evidence."""
     value = clean(model)
     lowered = value.casefold()
-    claude = re.search(r"(?:^|[/_-])claude-(opus|sonnet|haiku)-(\d+)-(\d+)(?:$|[/_.-])",
+    claude = re.search(r"(?:^|[/_-])claude-(opus|sonnet|haiku)-(\d+)-(\d{1,2})(?:$|[/_.-])",
                        lowered)
     if claude:
         family = {"opus": "Op", "sonnet": "Son", "haiku": "Hai"}[claude.group(1)]
