@@ -264,7 +264,15 @@ in that pane's process information, and the Pi v3 header cwd must equal its
 confirmed cwd. A reference does not help establish the primary itself.
 
 TShepherd opens only that owned regular non-symlink with no-follow semantics.
-The read is limited to 16 MiB, 4 MiB per line, and 4096 entries. It projects only
+The read is limited to 256 MiB and 4096 entries. The larger file bound
+accommodates long-lived primary sessions while each line is streamed and
+immediately discarded after structural projection. A line over 4 MiB, such as a
+pasted screenshot or large tool result, is projected only from the top-level
+scalars in its first and last 64 KiB, whether its identity precedes or follows
+the payload; the rest is drained undecoded. That entry keeps only its ID, parent
+link, type, and scalar runtime fields, so it links the ancestry without adding
+assistant model evidence and the surrounding entries still determine the
+settings. It projects only
 entry IDs, parent links, model changes, thinking changes, and assistant
 provider/model fields into the retained graph. Session lines, including payloads,
 are decoded transiently in memory; prompt, message, tool, summary, and custom
