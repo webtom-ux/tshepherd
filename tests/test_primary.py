@@ -361,7 +361,7 @@ class PersistedPiSessionTests(unittest.TestCase):
         return app.read_pi_session_runtime(str(self.path), self.cwd)
 
     def test_oversized_line_keeps_evidenced_model_and_thinking(self):
-        payload = 'PRIVATE_SCREENSHOT_ü' * (app.PI_SESSION_LINE_BYTES // 16)
+        payload = 'PRIVATE_SCREEN"SHOT\\ü' * (app.PI_SESSION_LINE_BYTES // 16)
         entries = pi_entries(provider='xai', model='grok-4.7') + [
             {'type': 'message', 'id': 'screenshot', 'parentId': 'effort',
              'timestamp': '2026-09-24T21:44:32.924Z',
@@ -377,12 +377,30 @@ class PersistedPiSessionTests(unittest.TestCase):
         self.assertEqual(app.read_pi_session_runtime(str(self.path), self.cwd),
                          {'model': 'xai/grok-4.7', 'effort': 'medium'})
 
-        entries[2]['message'] = {'role': 'assistant', 'content': [{'data': payload}],
-                                 'provider': 'xai', 'model': 'grok-4.7'}
+        trailing_id = [
+            {'type': 'custom', 'customType': 'clipboard', 'data': {'image': payload},
+             'id': 'screenshot', 'parentId': 'effort', 'timestamp': '2026-09-24T21:44:32.924Z'},
+            {'type': 'custom_message', 'customType': 'note', 'content': payload, 'display': True,
+             'details': {'size': 1}, 'id': 'screenshot', 'parentId': 'effort',
+             'timestamp': '2026-09-24T21:44:32.924Z'},
+            {'type': 'message', 'id': 'screenshot', 'parentId': 'effort',
+             'message': {'content': [{'type': 'text', 'text': payload}], 'role': 'assistant',
+                         'provider': 'xai', 'model': 'grok-4.7', 'usage': {'input': 1}}},
+        ]
+        for entry in trailing_id:
+            entries[2] = entry
+            self.assertEqual(self.read(entries), {'model': 'xai/grok-4.7', 'effort': 'medium'})
+
+        entries[2] = dict(trailing_id[0], parentId='missing')
         with self.assertRaises(ValueError):
             self.read(entries)
-        entries[2] = {'type': 'message', 'id': 'screenshot', 'parentId': 'missing',
-                      'message': {'role': 'user', 'content': payload}}
+        entries[2] = {'type': 'custom', 'data': payload, 'id': 'screenshot', 'parentId': 'effort',
+                      'id2': 'x'}
+        self.assertEqual(self.read(entries), {'model': 'xai/grok-4.7', 'effort': 'medium'})
+        self.path.write_bytes(self.path.read_bytes().replace(b'"id2": "x"}', b'"id": "x"}'))
+        with self.assertRaises(ValueError):
+            app.read_pi_session_runtime(str(self.path), self.cwd)
+        entries[2] = {'type': 'custom', 'data': payload, 'parentId': 'effort'}
         with self.assertRaises(ValueError):
             self.read(entries)
 

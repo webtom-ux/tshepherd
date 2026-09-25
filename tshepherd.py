@@ -291,17 +291,14 @@ def _reject_json_constant(_value):
     raise ValueError(tr("Pi-Sitzungsdatei enthält ungültige JSON-Werte"))
 
 
-def _project_leading_session_fields(text, index=0, nested=True):
-    """Project leading structural scalars of one truncated JSON object.
-
-    A composite value ends projection, except the entry's own ``message`` object.
-    """
+def _project_leading_session_fields(text):
+    """Project leading top-level scalars of one JSON object's bounded prefix."""
     decoder = json.JSONDecoder(parse_constant=_reject_json_constant)
     space = re.compile(r"[ \t\n\r]*")
-    index = space.match(text, index).end()
+    index = space.match(text).end()
     if text[index:index + 1] != "{":
         raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
-    value, seen = {}, set()
+    value = {}
     index += 1
     while True:
         index = space.match(text, index).end()
@@ -309,29 +306,81 @@ def _project_leading_session_fields(text, index=0, nested=True):
             return value
         try:
             key, index = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
-            return value
-        index = space.match(text, index).end()
-        if text[index:index + 1] != ":":
-            return value
-        index = space.match(text, index + 1).end()
-        if key in seen:
-            raise ValueError(tr("Pi-Sitzungsdatei enthält doppelte JSON-Felder"))
-        seen.add(key)
-        if text[index:index + 1] in ("{", "["):
-            if nested and key == "message" and text[index] == "{":
-                value[key] = _project_leading_session_fields(text, index, False)
-            return value
-        try:
+            index = space.match(text, index).end()
+            if text[index:index + 1] != ":":
+                return value
+            index = space.match(text, index + 1).end()
+            if text[index:index + 1] in ("{", "["):
+                return value
             item, index = decoder.raw_decode(text, index)
         except json.JSONDecodeError:
             return value
-        if key in PI_STRUCTURAL_KEYS:
-            value[key] = item
+        if key in value:
+            raise ValueError(tr("Pi-Sitzungsdatei enthält doppelte JSON-Felder"))
+        value[key] = item
         index = space.match(text, index).end()
         if text[index:index + 1] != ",":
             return value
         index += 1
+
+
+def _project_trailing_session_fields(text):
+    """Project trailing top-level scalars of one JSON object's bounded suffix.
+
+    Parsing runs backward from the closing brace. Inside a JSON string every
+    quote is escaped, so a quote preceded by an even backslash run opens it.
+    """
+    def skip_space(index):
+        while index > 0 and text[index - 1] in " \t\n\r":
+            index -= 1
+        return index
+
+    def scalar_start(index):
+        if text[index - 1:index] != '"':
+            start = index
+            while start > 0 and (text[start - 1].isalnum() or text[start - 1] in ".+-"):
+                start -= 1
+            return start if start < index else None
+        start = index - 1
+        while True:
+            start = text.rfind('"', 0, start)
+            if start < 0:
+                return 0
+            slash = start
+            while slash > 0 and text[slash - 1] == "\\":
+                slash -= 1
+            if (start - slash) % 2 == 0:
+                return start
+
+    index = skip_space(len(text))
+    if text[index - 1:index] != "}":
+        raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
+    index -= 1
+    value = {}
+    while True:
+        index = skip_space(index)
+        item_start = scalar_start(index)
+        if not item_start:
+            return value
+        colon = skip_space(item_start)
+        if text[colon - 1:colon] != ":":
+            raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
+        key_end = skip_space(colon - 1)
+        if text[key_end - 1:key_end] != '"':
+            raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
+        key_start = scalar_start(key_end)
+        if not key_start:
+            return value
+        key = json.loads(text[key_start:key_end])
+        if key in value:
+            raise ValueError(tr("Pi-Sitzungsdatei enthält doppelte JSON-Felder"))
+        value[key] = json.loads(text[item_start:index], parse_constant=_reject_json_constant)
+        index = skip_space(key_start)
+        if text[index - 1:index] != ",":
+            if text[index - 1:index] != "{":
+                raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft"))
+            return value
+        index -= 1
 
 
 def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadline=None):
@@ -371,26 +420,34 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadlin
                     break
                 total += len(raw)
                 value = None
-                if len(raw) > PI_SESSION_LINE_BYTES:
-                    # Project an oversized line from a bounded prefix and drain
-                    # the remainder without retaining or decoding its payload.
-                    prefix, end = raw[:PI_SESSION_PREFIX_BYTES], raw[-1:]
+                oversized = len(raw) > PI_SESSION_LINE_BYTES
+                if oversized:
+                    # Project identity from bounded ends of an oversized line and
+                    # drain the rest without retaining or decoding its payload.
+                    prefix, suffix = raw[:PI_SESSION_PREFIX_BYTES], raw[-PI_SESSION_PREFIX_BYTES:]
                     raw = b""
-                    while end != b"\n" and total <= PI_SESSION_BYTES:
+                    while not suffix.endswith(b"\n") and total <= PI_SESSION_BYTES:
                         check_deadline()
                         chunk = handle.readline(PI_SESSION_LINE_BYTES)
                         if not chunk:
                             break
                         total += len(chunk)
-                        end = chunk[-1:]
+                        suffix = (suffix + chunk)[-PI_SESSION_PREFIX_BYTES:]
                         chunk = b""
                     try:
-                        text = codecs.getincrementaldecoder("utf-8")().decode(prefix)
-                        value = _project_leading_session_fields(text)
+                        leading = _project_leading_session_fields(
+                            codecs.getincrementaldecoder("utf-8")().decode(prefix))
+                        trailing = _project_trailing_session_fields(
+                            suffix.lstrip(bytes(range(0x80, 0xC0))).decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
                         raise ValueError(tr("Pi-Sitzungsdatei fehlerhaft")) from None
                     finally:
-                        prefix = text = b""
+                        prefix = suffix = b""
+                    if leading.keys() & trailing.keys():
+                        raise ValueError(tr("Pi-Sitzungsdatei enthält doppelte JSON-Felder"))
+                    value = {key: item for key, item in {**leading, **trailing}.items()
+                             if key in PI_STRUCTURAL_KEYS}
+                    leading = trailing = None
                 if total > PI_SESSION_BYTES or number > PI_SESSION_ENTRIES:
                     raise ValueError(tr("Pi-Sitzungsdatei überschreitet Grenzen"))
                 if value is None:
@@ -427,7 +484,7 @@ def read_pi_session_runtime(path, expected_cwd, revalidate=lambda: None, deadlin
                     effort = value.get("thinkingLevel")
                     if effort not in PI_EFFORTS:
                         raise ValueError(tr("Pi-Denkstufe ungültig"))
-                elif entry_type == "message":
+                elif entry_type == "message" and not oversized:
                     message = value.get("message")
                     if not isinstance(message, dict) or not _bounded_session_text(message.get("role"), 64):
                         raise ValueError(tr("Pi-Nachrichtenstruktur ungültig"))
