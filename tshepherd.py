@@ -1670,6 +1670,7 @@ class View:
     selected_physical: tuple = ()
     quotas: list = field(default_factory=list)
     task_times: dict = field(default_factory=dict)
+    revision: int = 0
 
     def retain_task_times(self, rows, now):
         """Keep the last confirmed active interval for a terminal worker row."""
@@ -1689,6 +1690,7 @@ class View:
 
     def apply(self, kind, payload):
         if kind == "snapshot":
+            self.revision += 1
             self.snapshot, self.natives = payload
             if self.selected:
                 physical = self.natives.get(self.selected[0], Native()).physical
@@ -1760,8 +1762,10 @@ def quota_segments(quotas, now, compact=False, tiny=False):
     return segments
 
 
-def render_lines(view, rows, width, height, busy, now):
+def render_lines(view, rows, width, height, busy, now, hits=None):
     """Reference-like terminal content: count blocks, hierarchy, compact rows."""
+    if hits is not None:
+        hits.clear()
     blank = styled(("", 0))
     if height < 16 or width < 28:
         return [(fit(text, max(0, width - 1)), spans) for text, spans in [
@@ -1810,6 +1814,10 @@ def render_lines(view, rows, width, height, busy, now):
     if wide:
         lines.append(blank)
     if primary is not None:
+        if hits is not None:
+            hits[len(lines)] = primary.key
+            if not wide:
+                hits[len(lines) + 1] = primary.key
         mark = ">" if primary.key == view.selected else " "
         status = tr(primary.live) if primary.physical else tr("nicht verfügbar")
         color = LIVE_STATES.index(primary.live) + 1
@@ -1832,6 +1840,7 @@ def render_lines(view, rows, width, height, busy, now):
                              + "  " + column(tr("Aufgabe"), 8) + "  " + column(tr("Zeit"), time_width)
                              + tr("  Letzte bekannte Aktivität"), 7)))
     body, project, chosen, chosen_end = [], None, None, None
+    body_hits = {}
     group_number = 0
     for number, row in enumerate(rows, 1):
         if row.project != project:
@@ -1843,6 +1852,9 @@ def render_lines(view, rows, width, height, busy, now):
             group_number += 1
         if row.key == view.selected:
             chosen = len(body)
+        body_hits[len(body)] = row.key
+        if not wide:
+            body_hits[len(body) + 1] = row.key
         state_color = LIVE_STATES.index(row.live) + 1
         glyph = {"working": "●", "waiting": "!", "idle": "○", "done": "✓", "unknown": "?"}[row.live]
         mark = ">" if row.key == view.selected else " "
@@ -1873,6 +1885,10 @@ def render_lines(view, rows, width, height, busy, now):
         elif chosen_end >= view.offset + available:
             view.offset = max(0, chosen_end + 1 - available)
     view.offset = max(0, min(view.offset, max(0, len(body) - available)))
+    if hits is not None:
+        hits.update({len(lines) + index - view.offset: key
+                     for index, key in body_hits.items()
+                     if view.offset <= index < view.offset + available})
     lines.extend(body[view.offset:view.offset + available])
     lines.extend([blank] * max(0, height - 4 - len(lines)))
     selected = next((row for row in rows if row.key == view.selected), None)
@@ -1897,6 +1913,84 @@ def render_lines(view, rows, width, height, busy, now):
     return [(fit(text, width - 1), spans) for text, spans in lines[:height]]
 
 
+def terminal_write(data):
+    os.write(sys.stdout.fileno(), data)
+
+
+class MouseSelection:
+    """Immediate single-click selection; two presses, never two focus jobs.
+
+    Reports are decoded from raw xterm bytes because curses' legacy mouse ABI
+    folds wheel-down and sideways scroll into one ambiguous event."""
+    interval = 0.35
+    enable = b"\x1b[?1000h\x1b[?1006h"  # Button presses only; SGR coordinates.
+    disable = b"\x1b[?1006l\x1b[?1000l"
+    modifiers = 4 | 8 | 16  # Shift, Meta, Ctrl bits of the xterm button code.
+    sgr = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
+    partial = re.compile(r"\x1b(\[(<[\d;]{0,16}|M.{0,2})?)?", re.S)
+
+    def __init__(self, prefix):
+        self.prefix = prefix  # Terminfo kmous: keypad() reports it as KEY_MOUSE.
+        self.pending = None
+        self.sequence = ""
+
+    def reset(self):
+        self.pending = None
+
+    def decode(self, key):
+        """Feed one getch() result: a key to handle, a report (code, x, y, pressed), or None."""
+        if key == 27:
+            self.sequence = "\x1b"
+            return None
+        if key == curses.KEY_MOUSE:
+            self.sequence = self.prefix
+            return None
+        if not self.sequence:
+            return key
+        if key == -1:
+            return None  # Fragmented report; keep collecting.
+        self.sequence += chr(key) if 0 <= key < 256 else "\0"
+        report = self.sgr.fullmatch(self.sequence)
+        if report:
+            self.sequence = ""
+            code, x, y = map(int, report.group(1, 2, 3))
+            return code, x - 1, y - 1, report.group(4) == "M"
+        if self.sequence.startswith("\x1b[M") and len(self.sequence) == 6:
+            code, x, y = (ord(c) - 32 for c in self.sequence[3:])
+            self.sequence = ""
+            return code, x - 1, y - 1, code & ~self.modifiers != 3
+        if self.partial.fullmatch(self.sequence):
+            return None
+        self.sequence = ""
+        return key
+
+    def scroll(self, report):
+        code, _, _, pressed = report
+        key = {64: curses.KEY_UP, 65: curses.KEY_DOWN}.get(code & ~self.modifiers) if pressed else None
+        if key is not None:
+            self.reset()
+        return key
+
+    def click(self, report, hits, size, view, rows, now):
+        code, x, y, pressed = report
+        height, width = size
+        if code != 0 or not pressed:
+            return False
+        key = hits.get(y) if 0 <= x < width - 1 and 0 <= y < height else None
+        if key is None or key not in [row.key for row in rows]:
+            self.reset()
+            return False
+        physical = view.natives.get(key[0], Native()).physical
+        token = (key, physical, view.revision, size)
+        activate = (self.pending is not None and self.pending[0] == token
+                    and 0 <= now - self.pending[1] <= self.interval)
+        # A click is explicit reselection, including after physical replacement.
+        view.selected, view.selected_physical = key, ()
+        view.selection(rows)
+        self.pending = None if activate else (token, now)
+        return activate
+
+
 def tui(screen, source):
     curses.curs_set(0)
     screen.timeout(80)
@@ -1916,7 +2010,24 @@ def tui(screen, source):
     poller = Poller(source, source.config.interval)
     poller.start()
     retry = UnknownRetry()
+    mouse = MouseSelection((curses.tigetstr("kmous") or b"").decode("latin-1"))
+
+    def suspend(signum, frame):
+        # Replaces ncurses' stop handler, which cannot see raw-enabled reporting.
+        terminal_write(mouse.disable)
+        curses.endwin()
+        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTSTP)
+        signal.signal(signal.SIGTSTP, suspend)
+        terminal_write(mouse.enable)
+        screen.keypad(True)
+        screen.refresh()
+
+    previous_stop = signal.getsignal(signal.SIGTSTP)
+    if previous_stop != signal.SIG_IGN:  # Like ncurses, respect an inherited ignore.
+        signal.signal(signal.SIGTSTP, suspend)
     try:
+        terminal_write(mouse.enable)
         while True:
             while not poller.results.empty():
                 view.apply(*poller.results.get_nowait())
@@ -1928,7 +2039,8 @@ def tui(screen, source):
                 view.selection(rows)
             height, width = screen.getmaxyx()
             screen.erase()
-            for y, (text, spans) in enumerate(render_lines(view, rows, width, height, poller.busy.is_set(), now)):
+            hits = {}
+            for y, (text, spans) in enumerate(render_lines(view, rows, width, height, poller.busy.is_set(), now, hits)):
                 try:
                     screen.addstr(y, 0, text)
                     for x, segment, role in spans:
@@ -1943,7 +2055,23 @@ def tui(screen, source):
                 except curses.error:
                     pass  # Last-cell/resize races are harmless; next frame redraws.
             screen.refresh()
-            key = screen.getch()
+            key = mouse.decode(screen.getch())
+            if key is None:
+                continue
+            if isinstance(key, tuple):
+                if screen.getmaxyx() != (height, width):
+                    mouse.reset()
+                    continue
+                report = key
+                wheel = mouse.scroll(report)
+                if wheel is not None:
+                    key = wheel  # Same movement path as the arrow keys.
+                elif mouse.click(report, hits, (height, width), view, rows, time.monotonic()):
+                    key = curses.KEY_ENTER  # One shared, guarded activation path.
+                else:
+                    continue
+            elif key != -1:
+                mouse.reset()
             if key in (ord("q"), 3):
                 break
             if key in (curses.KEY_UP, ord("k")):
@@ -1961,7 +2089,11 @@ def tui(screen, source):
                 else:
                     view.message = tr("Fokusprüfung läuft bereits")
     finally:
-        poller.close()
+        try:
+            signal.signal(signal.SIGTSTP, signal.SIG_DFL if previous_stop is None else previous_stop)
+            terminal_write(mouse.disable)
+        finally:
+            poller.close()
 
 
 def parse_args(argv=None):
