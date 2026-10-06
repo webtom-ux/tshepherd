@@ -158,7 +158,8 @@ class ReloadTests(unittest.TestCase):
             def getch(self): return next(self.keys)
             def getmaxyx(self): return 30, 110
             def __getattr__(self, name): return lambda *args: None
-        with patch.object(app, 'Poller') as poller, patch.object(app.curses, 'curs_set'), patch.object(app.curses, 'has_colors', return_value=False):
+        with patch.object(app, 'Poller') as poller, patch.object(app.curses, 'curs_set'), patch.object(app.curses, 'tigetstr', return_value=None), \
+                patch.object(app.curses, 'has_colors', return_value=False):
             poller.return_value.results.empty.return_value = True
             app.tui(Screen(), app.Source(app.Config('/home', '/root'), FakeRunner()))
             poller.return_value.request_refresh.assert_called_once_with()
