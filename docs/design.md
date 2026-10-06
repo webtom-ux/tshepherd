@@ -102,7 +102,9 @@ Mouse selection uses a hit map produced by the same rendering pass, including
 scrolled worker lines, narrow detail lines, and the fixed primary row. Headers,
 project labels, spacers, and footer lines have no target. Raw left-button presses
 select immediately; a second press on the same identity within 350 ms uses the
-existing Enter guards and single-flight dispatch. Keyboard input, a non-entry
+existing Enter guards and single-flight dispatch. Wheel ticks take the arrow-key
+movement path; legacy ncurses reports wheel-down as a position event, which mode
+1000 emits for nothing else. Keyboard input, wheel ticks, a non-entry
 click, changed window size, or a delivered snapshot breaks that click pair;
 physical identity changes also prevent activation across the pair. Mouse reporting
 is enabled through curses and its prior mask is restored before terminal teardown.
