@@ -16,7 +16,7 @@ class MouseTests(unittest.TestCase):
         self.snapshot = sample_snapshot(str(Path.cwd()))
         self.view = app.View(snapshot=self.snapshot, last_success=time.time())
         self.rows = [app.PrimaryRow()] + app.rows_for(self.snapshot, {}, time.time(), 45)
-        self.mouse = app.MouseSelection()
+        self.mouse = app.MouseSelection('\x1b[M')
 
     def frame(self, width=110, height=30):
         hits = {}
@@ -85,7 +85,7 @@ class MouseTests(unittest.TestCase):
         _, hits = self.frame(27, 15)
         self.assertEqual(hits, {})
 
-    def run_tui(self, keys):
+    def run_tui(self, keys, kmous=b'\x1b[M'):
         screen = Mock()
         screen.getmaxyx.return_value = (30, 110)
         screen.getch.side_effect = keys
@@ -98,6 +98,7 @@ class MouseTests(unittest.TestCase):
                 patch.object(app, 'overview_rows', return_value=self.rows), \
                 patch.object(app, 'terminal_write', side_effect=writes.append), \
                 patch.object(app.curses, 'curs_set'), \
+                patch.object(app.curses, 'tigetstr', return_value=kmous), \
                 patch.object(app.curses, 'has_colors', return_value=False):
             try:
                 app.tui(screen, source)
@@ -125,12 +126,23 @@ class MouseTests(unittest.TestCase):
                               + sgr(64, 12, y) + [curses.KEY_ENTER, ord('q')])
         poller.request_focus.assert_called_once_with(self.rows[2].key, ())
 
+    def test_tui_ghostty_kmous_reports_sgr_body_after_key_mouse(self):
+        # Ghostty's terminfo has kmous=\E[<, so keypad() consumes that prefix.
+        def ghostty(code, x, y, final='M'):
+            return [curses.KEY_MOUSE] + sgr(code, x, y, final)[3:]
+        y = self.row_y(self.rows[1])
+        poller = self.run_tui(ghostty(0, 12, y) + ghostty(0, 12, y, 'm') + ghostty(0, 12, y)
+                              + ghostty(65, 12, y) + ghostty(67, 12, y) + ghostty(66, 12, y)
+                              + [curses.KEY_ENTER, ord('q')], kmous=b'\x1b[<')
+        self.assertEqual([c.args for c in poller.request_focus.call_args_list],
+                         [(self.rows[1].key, ()), (self.rows[2].key, ())])
+
     def test_decode_fragmented_sgr_legacy_reports_and_plain_keys(self):
-        mouse = app.MouseSelection()
+        mouse = app.MouseSelection('\x1b[M')
         results = [mouse.decode(k) for k in sgr(0, 12, 5)[:4] + [-1, -1] + sgr(0, 12, 5)[4:]]
         self.assertEqual([r for r in results if r is not None], [(0, 12, 5, True)])
         self.assertEqual([mouse.decode(k) for k in sgr(65, 300, 5, 'm')][-1], (65, 300, 5, False))
-        # keypad() reports the legacy "ESC [ M" prefix as KEY_MOUSE; payload bytes never leak.
+        # With kmous=\E[M, keypad() reports that prefix as KEY_MOUSE; payload bytes never leak.
         for code, pressed in ((0, True), (3, False), (65, True), (67, True)):
             results = [mouse.decode(k) for k in (curses.KEY_MOUSE, 32 + code, 33 + 12, 33 + 5)]
             self.assertEqual(results, [None, None, None, (code, 12, 5, pressed)])

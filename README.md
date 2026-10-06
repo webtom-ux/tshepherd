@@ -109,7 +109,8 @@ Hold **Shift** to use Ghostty's normal text selection instead of dashboard click
 Keyboard navigation remains available when mouse reporting is unsupported.
 TShepherd requests SGR mouse reports (mode 1006) and decodes them itself; a
 terminal without SGR support falls back to legacy reports limited to 223
-columns/rows. Reporting is enabled only while running and disabled on exit.
+columns/rows. Reporting is enabled only while running and is disabled on exit
+and while TShepherd is suspended with **Ctrl+Z**.
 
 The compact model column shows the confirmed
 runtime model and thinking effort (`Sol·M` means Sol with medium effort). Known

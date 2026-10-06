@@ -15,14 +15,18 @@ import tempfile
 import termios
 import time
 import unittest
+from unittest.mock import patch
+
+GHOSTTY_TERMINFO = '/Applications/Ghostty.app/Contents/Resources/terminfo'
 
 
 class TerminalTests(unittest.TestCase):
-    def drive(self, args, interrupt=False, script="tshepherd.py", mouse=False):
+    def drive(self, args, interrupt=False, script="tshepherd.py", mouse=False, term='xterm-256color'):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 110, 0, 0))
         before = termios.tcgetattr(slave)
-        env = dict(os.environ, TERM='xterm-256color')
+        terminfo = {'TERMINFO': GHOSTTY_TERMINFO} if term == 'xterm-ghostty' else {}
+        env = dict(os.environ, TERM=term, **terminfo)
         proc = subprocess.Popen([sys.executable, script, *args], stdin=slave,
                                 stdout=slave, stderr=slave, env=env, start_new_session=True)
         output = bytearray()
@@ -96,7 +100,8 @@ class TerminalTests(unittest.TestCase):
             self.assertTrue(select.select([slave], [], [], 1)[0])
             self.assertEqual(os.read(slave, 100), b'RESTORED_LINE\n')
             self.assertEqual(termios.tcgetattr(slave), before)
-            curses.setupterm(term='xterm-256color')
+            with patch.dict(os.environ, terminfo):
+                curses.setupterm(term=term)
             for enter, leave in [('smcup', 'rmcup'), ('civis', 'cnorm')]:
                 initial, final = curses.tigetstr(enter), curses.tigetstr(leave)
                 self.assertIn(initial, output)
@@ -150,6 +155,12 @@ class TerminalTests(unittest.TestCase):
     def test_real_mouse_press_selects_without_focus(self):
         self.drive([], script='tests/fixtures.py', mouse=True)
 
+    @unittest.skipUnless(os.path.isdir(GHOSTTY_TERMINFO), 'Ghostty terminfo not installed')
+    def test_real_mouse_with_ghostty_terminfo(self):
+        # Ghostty's kmous is the SGR prefix, so keypad() reports it as KEY_MOUSE.
+        output = self.drive([], script='tests/fixtures.py', mouse=True, term='xterm-ghostty')
+        self.assertIn(b'\x1b[?1006h', output)
+
     def test_real_shell_usable_after_quit_and_terminal_ctrl_c(self):
         # Isolate the controlling-shell scenario from other PTY fixtures.
         # Cleanup closes the owned master before reaping: on macOS a killed
@@ -159,7 +170,9 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def _real_shell_check(self):
-        for key in (b'q', b'\x03'):
+        curses.setupterm(term='xterm-256color')
+        keypad_on = curses.tigetstr('smkx')
+        for key in (b'q', b'\x03', b'\x1a'):
             with self.subTest(key=key):
                 pid, master = pty.fork()
                 if pid == 0:
@@ -172,14 +185,36 @@ class TerminalTests(unittest.TestCase):
                         if select.select([master], [], [], .05)[0]:
                             output.extend(os.read(master, 65536))
                     self.assertIn(marker, output, output.decode('utf-8', 'replace'))
+                    return output
                 try:
                     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 110, 0, 0))
                     read_until(b'SHELL_READY>')
                     command = shlex.join([sys.executable, str(Path('tests/fixtures.py').resolve())])
                     os.write(master, (command + '\n').encode())
                     read_until(b'TShepherd')
+                    if key == b'\x1a':
+                        # Ctrl+Z hands the shell a terminal without mouse reporting.
+                        # Drain like a real emulator so the app is not blocked in output.
+                        deadline = time.monotonic() + .5
+                        while time.monotonic() < deadline:
+                            if select.select([master], [], [], .05)[0]:
+                                os.read(master, 65536)
+                        os.write(master, key)
+                        stopped = read_until(b'SHELL_READY>')
+                        self.assertIn(b'\x1b[?1006l\x1b[?1000l', stopped)
+                        self.assertNotIn(b'\x1b[?1000h', stopped.split(b'\x1b[?1000l')[-1])
+                        # fg restores reporting, keypad mode and SGR click input.
+                        os.write(master, b'fg\n')
+                        resumed = read_until(b'\x1b[?1000h\x1b[?1006h')
+                        resumed += read_until(b'TShepherd')
+                        self.assertIn(keypad_on, resumed)
+                        os.write(master, b'\x1b[<0;13;14M')
+                        read_until(b'demo-1')
+                        os.write(master, b'\x1b[<0;13;14m')
+                        key = b'q'
                     os.write(master, key)
-                    read_until(b'SHELL_READY>')
+                    quit_output = read_until(b'SHELL_READY>')
+                    self.assertIn(b'\x1b[?1006l\x1b[?1000l', quit_output)
                     os.write(master, b"printf 'SHELL_OK_%s\\n' $((2+3))\n")
                     read_until(b'SHELL_OK_5')
                     # Restored terminal-generated SIGINT interrupts a new child.
