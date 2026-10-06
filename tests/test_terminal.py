@@ -166,17 +166,23 @@ class TerminalTests(unittest.TestCase):
         # Cleanup closes the owned master before reaping: on macOS a killed
         # interactive shell can remain in kernel exit state until that close.
         result = subprocess.run([sys.executable, __file__, '--shell-check'],
-                                capture_output=True, text=True, timeout=12)
+                                capture_output=True, text=True, timeout=40)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def _real_shell_check(self):
-        curses.setupterm(term='xterm-256color')
+        # Suspend scenarios use the user's terminal description when installed.
+        ghostty = os.path.isdir(GHOSTTY_TERMINFO)
+        suspend_env = ({'TERM': 'xterm-ghostty', 'TERMINFO': GHOSTTY_TERMINFO} if ghostty
+                       else {'TERM': 'xterm-256color'})
+        with patch.dict(os.environ, suspend_env):
+            curses.setupterm(term=suspend_env['TERM'])
         keypad_on = curses.tigetstr('smkx')
-        for key in (b'q', b'\x03', b'\x1a'):
+        for key in (b'q', b'\x03', b'\x1a', b'ignored'):
             with self.subTest(key=key):
+                env = suspend_env if key in (b'\x1a', b'ignored') else {'TERM': 'xterm-256color'}
                 pid, master = pty.fork()
                 if pid == 0:
-                    os.environ.update(TERM='xterm-256color', PS1='SHELL_READY> ')
+                    os.environ.update(env, PS1='SHELL_READY> ')
                     os.execl('/bin/sh', 'sh', '-i')
                 def read_until(marker, timeout=5):
                     output = bytearray()
@@ -190,8 +196,23 @@ class TerminalTests(unittest.TestCase):
                     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 110, 0, 0))
                     read_until(b'SHELL_READY>')
                     command = shlex.join([sys.executable, str(Path('tests/fixtures.py').resolve())])
+                    if key == b'ignored':
+                        # A launcher that ignores SIGTSTP keeps Ctrl+Z from stopping the app.
+                        command = shlex.join(['sh', '-c', "trap '' TSTP; exec " + command])
                     os.write(master, (command + '\n').encode())
                     read_until(b'TShepherd')
+                    if key == b'ignored':
+                        deadline = time.monotonic() + .5
+                        while time.monotonic() < deadline:
+                            if select.select([master], [], [], .05)[0]:
+                                os.read(master, 65536)
+                        os.write(master, b'\x1a')
+                        os.write(master, b'\x1b[<0;13;14M')
+                        running = read_until(b'demo-1')
+                        os.write(master, b'\x1b[<0;13;14m')
+                        self.assertNotIn(b'Stopped', running)
+                        self.assertNotIn(b'\x1b[?1000l', running)
+                        key = b'q'
                     if key == b'\x1a':
                         # Ctrl+Z hands the shell a terminal without mouse reporting.
                         # Drain like a real emulator so the app is not blocked in output.

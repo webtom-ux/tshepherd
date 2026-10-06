@@ -2023,7 +2023,9 @@ def tui(screen, source):
         screen.keypad(True)
         screen.refresh()
 
-    previous_stop = signal.signal(signal.SIGTSTP, suspend)
+    previous_stop = signal.getsignal(signal.SIGTSTP)
+    if previous_stop != signal.SIG_IGN:  # Like ncurses, respect an inherited ignore.
+        signal.signal(signal.SIGTSTP, suspend)
     try:
         terminal_write(mouse.enable)
         while True:
