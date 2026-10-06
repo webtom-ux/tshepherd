@@ -118,9 +118,10 @@ class MouseTests(unittest.TestCase):
         press = (0, 12, y, 0, curses.BUTTON1_PRESSED)
         down = (0, 12, y, 0, app.MouseSelection.wheel_down)
         up = (0, 12, y, 0, curses.BUTTON4_PRESSED)
+        sideways = (0, 12, y, 0, curses.BUTTON4_PRESSED | curses.BUTTON_SHIFT)
         screen = Mock()
         screen.getmaxyx.return_value = (30, 110)
-        screen.getch.side_effect = [curses.KEY_MOUSE] * 6 + [curses.KEY_ENTER, ord('q')]
+        screen.getch.side_effect = [curses.KEY_MOUSE] * 7 + [curses.KEY_ENTER, ord('q')]
         poller = Mock()
         poller.results = queue.Queue()
         poller.busy.is_set.return_value = False
@@ -131,7 +132,7 @@ class MouseTests(unittest.TestCase):
                 patch.object(app.curses, 'has_colors', return_value=False), \
                 patch.object(app.curses, 'mousemask', return_value=(1, 42)) as mask, \
                 patch.object(app.curses, 'mouseinterval', return_value=166), \
-                patch.object(app.curses, 'getmouse', side_effect=[press, down, press, down, down, up]):
+                patch.object(app.curses, 'getmouse', side_effect=[press, down, press, down, down, sideways, up]):
             app.tui(screen, source)
         wheel = curses.BUTTON4_PRESSED | app.MouseSelection.wheel_down
         self.assertEqual(mask.call_args_list[0].args[0] & wheel, wheel)
