@@ -112,6 +112,31 @@ class MouseTests(unittest.TestCase):
         self.assertEqual(interval.call_args.args, (166,))
         poller.close.assert_called_once()
 
+    def test_tui_wheel_moves_selection_like_arrows_and_breaks_click_pair(self):
+        _, hits = self.frame()
+        y = next(y for y, key in hits.items() if key == self.rows[1].key)
+        press = (0, 12, y, 0, curses.BUTTON1_PRESSED)
+        down = (0, 12, y, 0, app.MouseSelection.wheel_down)
+        up = (0, 12, y, 0, curses.BUTTON4_PRESSED)
+        screen = Mock()
+        screen.getmaxyx.return_value = (30, 110)
+        screen.getch.side_effect = [curses.KEY_MOUSE] * 6 + [curses.KEY_ENTER, ord('q')]
+        poller = Mock()
+        poller.results = queue.Queue()
+        poller.busy.is_set.return_value = False
+        source = SimpleNamespace(config=SimpleNamespace(interval=5, ttl=45))
+        with patch.object(app, 'Poller', return_value=poller), \
+                patch.object(app, 'overview_rows', return_value=self.rows), \
+                patch.object(app.curses, 'curs_set'), \
+                patch.object(app.curses, 'has_colors', return_value=False), \
+                patch.object(app.curses, 'mousemask', return_value=(1, 42)) as mask, \
+                patch.object(app.curses, 'mouseinterval', return_value=166), \
+                patch.object(app.curses, 'getmouse', side_effect=[press, down, press, down, down, up]):
+            app.tui(screen, source)
+        wheel = curses.BUTTON4_PRESSED | app.MouseSelection.wheel_down
+        self.assertEqual(mask.call_args_list[0].args[0] & wheel, wheel)
+        poller.request_focus.assert_called_once_with(self.rows[2].key, ())
+
     def test_mouse_reporting_restored_on_input_failure(self):
         screen = Mock()
         screen.getmaxyx.return_value = (30, 110)

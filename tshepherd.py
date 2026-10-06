@@ -1916,12 +1916,24 @@ def render_lines(view, rows, width, height, busy, now, hits=None):
 class MouseSelection:
     """Immediate single-click selection; two presses, never two focus jobs."""
     interval = 0.35
+    wheel_up = curses.BUTTON4_PRESSED
+    # The legacy ncurses mouse ABI (macOS) reports wheel-down only as position.
+    wheel_down = getattr(curses, "BUTTON5_PRESSED", curses.REPORT_MOUSE_POSITION)
+    mask = curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED | wheel_up | wheel_down
 
     def __init__(self):
         self.pending = None
 
     def reset(self):
         self.pending = None
+
+    def scroll(self, event):
+        buttons = event[4]
+        key = (curses.KEY_UP if buttons & self.wheel_up
+               else curses.KEY_DOWN if buttons & self.wheel_down else None)
+        if key is not None:
+            self.reset()
+        return key
 
     def click(self, event, hits, size, view, rows, now):
         _, x, y, z, buttons = event
@@ -1969,7 +1981,7 @@ def tui(screen, source):
     try:
         try:
             # Raw presses avoid curses delaying selection to aggregate clicks.
-            _, old_mouse_mask = curses.mousemask(curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED)
+            _, old_mouse_mask = curses.mousemask(mouse.mask)
             old_mouse_interval = curses.mouseinterval(0)
         except curses.error:
             pass  # Keyboard-only terminals remain supported.
@@ -2010,9 +2022,13 @@ def tui(screen, source):
                 if screen.getmaxyx() != (height, width):
                     mouse.reset()
                     continue
-                if not mouse.click(event, hits, (height, width), view, rows, time.monotonic()):
+                wheel = mouse.scroll(event)
+                if wheel is not None:
+                    key = wheel  # Same movement path as the arrow keys.
+                elif mouse.click(event, hits, (height, width), view, rows, time.monotonic()):
+                    key = curses.KEY_ENTER  # One shared, guarded activation path.
+                else:
                     continue
-                key = curses.KEY_ENTER  # One shared, guarded activation path.
             elif key != -1:
                 mouse.reset()
             if key in (ord("q"), 3):
