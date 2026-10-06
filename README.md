@@ -101,7 +101,7 @@ select it without switching tabs; **double-click** the same entry (within 350 ms
 to perform its Enter action once. Narrow-layout detail lines also belong to their
 entry; headers, project labels, and the footer are not selectable. A refresh or
 resize between clicks cancels the double-click pair. The **mouse wheel** moves
-the selection like **↑/↓**.
+the selection like **↑/↓**; sideways and modified scrolling are ignored.
 
 Ghostty supports terminal mouse reporting; clicks work when Ghostty (and any
 intervening terminal multiplexer) forwards mouse events to the application.

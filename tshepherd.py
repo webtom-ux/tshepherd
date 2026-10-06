@@ -1920,6 +1920,8 @@ class MouseSelection:
     # The legacy ncurses mouse ABI (macOS) reports wheel-down only as position.
     wheel_down = getattr(curses, "BUTTON5_PRESSED", curses.REPORT_MOUSE_POSITION)
     mask = curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED | wheel_up | wheel_down
+    # Legacy decoding also flags sideways scroll (button 6) as shifted wheel-up.
+    modifiers = curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT
 
     def __init__(self):
         self.pending = None
@@ -1929,6 +1931,8 @@ class MouseSelection:
 
     def scroll(self, event):
         buttons = event[4]
+        if buttons & self.modifiers:
+            return None
         key = (curses.KEY_UP if buttons & self.wheel_up
                else curses.KEY_DOWN if buttons & self.wheel_down else None)
         if key is not None:
@@ -1939,7 +1943,7 @@ class MouseSelection:
         _, x, y, z, buttons = event
         height, width = size
         if (z != 0 or not buttons & curses.BUTTON1_PRESSED
-                or buttons & (curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT)):
+                or buttons & self.modifiers):
             return False
         key = hits.get(y) if 0 <= x < width - 1 and 0 <= y < height else None
         if key is None or key not in [row.key for row in rows]:
