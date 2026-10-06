@@ -1913,34 +1913,67 @@ def render_lines(view, rows, width, height, busy, now, hits=None):
     return [(fit(text, width - 1), spans) for text, spans in lines[:height]]
 
 
+def terminal_write(data):
+    os.write(sys.stdout.fileno(), data)
+
+
 class MouseSelection:
-    """Immediate single-click selection; two presses, never two focus jobs."""
+    """Immediate single-click selection; two presses, never two focus jobs.
+
+    Reports are decoded from raw xterm bytes because curses' legacy mouse ABI
+    folds wheel-down and sideways scroll into one ambiguous event."""
     interval = 0.35
-    wheel_up = curses.BUTTON4_PRESSED
-    # The legacy ncurses mouse ABI (macOS) reports wheel-down only as position;
-    # with this mask it decodes sideways scroll (buttons 6/7) the same way.
-    wheel_down = getattr(curses, "BUTTON5_PRESSED", curses.REPORT_MOUSE_POSITION)
-    mask = curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED | wheel_up | wheel_down
+    enable = b"\x1b[?1000h\x1b[?1006h"  # Button presses only; SGR coordinates.
+    disable = b"\x1b[?1006l\x1b[?1000l"
+    modifiers = 4 | 8 | 16  # Shift, Meta, Ctrl bits of the xterm button code.
+    sgr = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
+    partial = re.compile(r"\x1b(\[(<[\d;]{0,16}|M.{0,2})?)?", re.S)
 
     def __init__(self):
         self.pending = None
+        self.sequence = ""
 
     def reset(self):
         self.pending = None
 
-    def scroll(self, event):
-        buttons = event[4]
-        key = (curses.KEY_UP if buttons & self.wheel_up
-               else curses.KEY_DOWN if buttons & self.wheel_down else None)
+    def decode(self, key):
+        """Feed one getch() result: a key to handle, a report (code, x, y, pressed), or None."""
+        if key == 27:
+            self.sequence = "\x1b"
+            return None
+        if key == curses.KEY_MOUSE:  # keypad() swallows the legacy "\x1b[M" prefix.
+            self.sequence = "\x1b[M"
+            return None
+        if not self.sequence:
+            return key
+        if key == -1:
+            return None  # Fragmented report; keep collecting.
+        self.sequence += chr(key) if 0 <= key < 256 else "\0"
+        report = self.sgr.fullmatch(self.sequence)
+        if report:
+            self.sequence = ""
+            code, x, y = map(int, report.group(1, 2, 3))
+            return code, x - 1, y - 1, report.group(4) == "M"
+        if self.sequence.startswith("\x1b[M") and len(self.sequence) == 6:
+            code, x, y = (ord(c) - 32 for c in self.sequence[3:])
+            self.sequence = ""
+            return code, x - 1, y - 1, code & ~self.modifiers != 3
+        if self.partial.fullmatch(self.sequence):
+            return None
+        self.sequence = ""
+        return key
+
+    def scroll(self, report):
+        code, _, _, pressed = report
+        key = {64: curses.KEY_UP, 65: curses.KEY_DOWN}.get(code & ~self.modifiers) if pressed else None
         if key is not None:
             self.reset()
         return key
 
-    def click(self, event, hits, size, view, rows, now):
-        _, x, y, z, buttons = event
+    def click(self, report, hits, size, view, rows, now):
+        code, x, y, pressed = report
         height, width = size
-        if (z != 0 or not buttons & curses.BUTTON1_PRESSED
-                or buttons & (curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT)):
+        if code != 0 or not pressed:
             return False
         key = hits.get(y) if 0 <= x < width - 1 and 0 <= y < height else None
         if key is None or key not in [row.key for row in rows]:
@@ -1977,15 +2010,8 @@ def tui(screen, source):
     poller.start()
     retry = UnknownRetry()
     mouse = MouseSelection()
-    old_mouse_mask = None
-    old_mouse_interval = None
     try:
-        try:
-            # Raw presses avoid curses delaying selection to aggregate clicks.
-            _, old_mouse_mask = curses.mousemask(mouse.mask)
-            old_mouse_interval = curses.mouseinterval(0)
-        except curses.error:
-            pass  # Keyboard-only terminals remain supported.
+        terminal_write(mouse.enable)
         while True:
             while not poller.results.empty():
                 view.apply(*poller.results.get_nowait())
@@ -2013,20 +2039,18 @@ def tui(screen, source):
                 except curses.error:
                     pass  # Last-cell/resize races are harmless; next frame redraws.
             screen.refresh()
-            key = screen.getch()
-            if key == curses.KEY_MOUSE:
-                try:
-                    event = curses.getmouse()
-                except curses.error:
-                    mouse.reset()
-                    continue
+            key = mouse.decode(screen.getch())
+            if key is None:
+                continue
+            if isinstance(key, tuple):
                 if screen.getmaxyx() != (height, width):
                     mouse.reset()
                     continue
-                wheel = mouse.scroll(event)
+                report = key
+                wheel = mouse.scroll(report)
                 if wheel is not None:
                     key = wheel  # Same movement path as the arrow keys.
-                elif mouse.click(event, hits, (height, width), view, rows, time.monotonic()):
+                elif mouse.click(report, hits, (height, width), view, rows, time.monotonic()):
                     key = curses.KEY_ENTER  # One shared, guarded activation path.
                 else:
                     continue
@@ -2050,10 +2074,7 @@ def tui(screen, source):
                     view.message = tr("Fokusprüfung läuft bereits")
     finally:
         try:
-            if old_mouse_mask is not None:
-                curses.mousemask(old_mouse_mask)
-            if old_mouse_interval is not None:
-                curses.mouseinterval(old_mouse_interval)
+            terminal_write(mouse.disable)
         finally:
             poller.close()
 
