@@ -1929,7 +1929,8 @@ class MouseSelection:
     sgr = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
     partial = re.compile(r"\x1b(\[(<[\d;]{0,16}|M.{0,2})?)?", re.S)
 
-    def __init__(self):
+    def __init__(self, prefix):
+        self.prefix = prefix  # Terminfo kmous: keypad() reports it as KEY_MOUSE.
         self.pending = None
         self.sequence = ""
 
@@ -1941,8 +1942,8 @@ class MouseSelection:
         if key == 27:
             self.sequence = "\x1b"
             return None
-        if key == curses.KEY_MOUSE:  # keypad() swallows the legacy "\x1b[M" prefix.
-            self.sequence = "\x1b[M"
+        if key == curses.KEY_MOUSE:
+            self.sequence = self.prefix
             return None
         if not self.sequence:
             return key
@@ -2009,7 +2010,20 @@ def tui(screen, source):
     poller = Poller(source, source.config.interval)
     poller.start()
     retry = UnknownRetry()
-    mouse = MouseSelection()
+    mouse = MouseSelection((curses.tigetstr("kmous") or b"").decode("latin-1"))
+
+    def suspend(signum, frame):
+        # Replaces ncurses' stop handler, which cannot see raw-enabled reporting.
+        terminal_write(mouse.disable)
+        curses.endwin()
+        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTSTP)
+        signal.signal(signal.SIGTSTP, suspend)
+        terminal_write(mouse.enable)
+        screen.keypad(True)
+        screen.refresh()
+
+    previous_stop = signal.signal(signal.SIGTSTP, suspend)
     try:
         terminal_write(mouse.enable)
         while True:
@@ -2074,6 +2088,7 @@ def tui(screen, source):
                     view.message = tr("Fokusprüfung läuft bereits")
     finally:
         try:
+            signal.signal(signal.SIGTSTP, signal.SIG_DFL if previous_stop is None else previous_stop)
             terminal_write(mouse.disable)
         finally:
             poller.close()

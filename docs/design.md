@@ -112,11 +112,17 @@ physical identity changes also prevent activation across the pair.
 of `curses.getmouse()`: the legacy ncurses mouse ABI (macOS system Python) folds
 wheel-down and sideways scroll into the same position event. TShepherd writes
 modes 1000 and 1006 itself (button events only, never 1002/1003 motion) and
-disables them in `tui`'s `finally` before terminal teardown. SGR reports may
-arrive fragmented across reads; legacy `ESC [ M` reports, which `keypad()`
-turns into `KEY_MOUSE`, have their three payload bytes consumed. Arrow keys
-still arrive as keypad codes; a partial escape that does not continue as a
-report is dropped and the following key is handled normally.
+disables them in `tui`'s `finally` before terminal teardown. `mousemask()` is not
+used: with Ghostty's terminfo it makes ncurses decode SGR reports itself, losing
+the raw button code. Because ncurses then cannot restore the modes, `tui`
+replaces ncurses' SIGTSTP handler: Ctrl+Z disables reporting before `endwin()`,
+and `fg` re-enables reporting and keypad mode before redrawing. SGR reports may
+arrive fragmented across reads. When a report starts with the terminfo `kmous`
+string, `keypad()` returns `KEY_MOUSE` in place of that prefix, so decoding
+resumes from `kmous`: `\E[<` (Ghostty) continues as SGR, while for `\E[M`
+(xterm-256color) the three legacy payload bytes are consumed. Arrow keys still
+arrive as keypad codes; a partial escape that does not continue as a report is
+dropped and the following key is handled normally.
 
 The view shows fetch age, data errors, inventory gaps, and unknown states.
 `rows_for` appends the native `done` explanation to the display reason when
