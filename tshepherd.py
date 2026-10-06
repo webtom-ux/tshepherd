@@ -1916,11 +1916,11 @@ def render_lines(view, rows, width, height, busy, now, hits=None):
 class MouseSelection:
     """Immediate single-click selection; two presses, never two focus jobs."""
     interval = 0.35
-    wheel_up = curses.BUTTON4_PRESSED
-    # The legacy ncurses mouse ABI (macOS) reports wheel-down only as position.
-    wheel_down = getattr(curses, "BUTTON5_PRESSED", curses.REPORT_MOUSE_POSITION)
+    # The legacy ncurses mouse ABI (macOS) has no button 5: wheel-down and
+    # sideways scroll arrive as identical position events, so no wheel there.
+    wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
+    wheel_up = curses.BUTTON4_PRESSED if wheel_down else 0
     mask = curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED | wheel_up | wheel_down
-    # Legacy decoding also flags sideways scroll (button 6) as shifted wheel-up.
     modifiers = curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT
 
     def __init__(self):
