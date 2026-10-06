@@ -116,7 +116,9 @@ disables them in `tui`'s `finally` before terminal teardown. `mousemask()` is no
 used: with Ghostty's terminfo it makes ncurses decode SGR reports itself, losing
 the raw button code. Because ncurses then cannot restore the modes, `tui`
 replaces ncurses' SIGTSTP handler: Ctrl+Z disables reporting before `endwin()`,
-and `fg` re-enables reporting and keypad mode before redrawing. SGR reports may
+and `fg` re-enables reporting and keypad mode before redrawing. Like ncurses, it
+leaves an inherited ignored SIGTSTP alone, and it restores the prior disposition
+on exit. SGR reports may
 arrive fragmented across reads. When a report starts with the terminfo `kmous`
 string, `keypad()` returns `KEY_MOUSE` in place of that prefix, so decoding
 resumes from `kmous`: `\E[<` (Ghostty) continues as SGR, while for `\E[M`
