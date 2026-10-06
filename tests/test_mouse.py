@@ -112,51 +112,31 @@ class MouseTests(unittest.TestCase):
         self.assertEqual(interval.call_args.args, (166,))
         poller.close.assert_called_once()
 
-    def wheel_tui(self, events, wheel_up, wheel_down):
+    def test_tui_wheel_moves_selection_like_arrows_and_breaks_click_pair(self):
+        _, hits = self.frame()
+        y = next(y for y, key in hits.items() if key == self.rows[1].key)
+        press = (0, 12, y, 0, curses.BUTTON1_PRESSED)
+        down = (0, 12, y, 0, app.MouseSelection.wheel_down)
+        up = (0, 12, y, 0, curses.BUTTON4_PRESSED)
+        shifted_down = (0, 12, y, 0, app.MouseSelection.wheel_down | curses.BUTTON_SHIFT)
         screen = Mock()
         screen.getmaxyx.return_value = (30, 110)
-        screen.getch.side_effect = [curses.KEY_MOUSE] * len(events) + [curses.KEY_ENTER, ord('q')]
+        screen.getch.side_effect = [curses.KEY_MOUSE] * 6 + [curses.KEY_ENTER, ord('q')]
         poller = Mock()
         poller.results = queue.Queue()
         poller.busy.is_set.return_value = False
         source = SimpleNamespace(config=SimpleNamespace(interval=5, ttl=45))
-        mask = curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED | wheel_up | wheel_down
         with patch.object(app, 'Poller', return_value=poller), \
                 patch.object(app, 'overview_rows', return_value=self.rows), \
-                patch.object(app.MouseSelection, 'wheel_up', wheel_up), \
-                patch.object(app.MouseSelection, 'wheel_down', wheel_down), \
-                patch.object(app.MouseSelection, 'mask', mask), \
                 patch.object(app.curses, 'curs_set'), \
                 patch.object(app.curses, 'has_colors', return_value=False), \
-                patch.object(app.curses, 'mousemask', return_value=(1, 42)) as mousemask, \
+                patch.object(app.curses, 'mousemask', return_value=(1, 42)) as mask, \
                 patch.object(app.curses, 'mouseinterval', return_value=166), \
-                patch.object(app.curses, 'getmouse', side_effect=events):
+                patch.object(app.curses, 'getmouse', side_effect=[press, down, press, down, shifted_down, up]):
             app.tui(screen, source)
-        self.assertEqual(mousemask.call_args_list[0].args, (mask,))
-        return poller
-
-    def test_tui_wheel_moves_selection_like_arrows_and_breaks_click_pair(self):
-        _, hits = self.frame()
-        y = next(y for y, key in hits.items() if key == self.rows[1].key)
-        wheel_down = getattr(curses, 'BUTTON5_PRESSED', 0x200000)
-        press = (0, 12, y, 0, curses.BUTTON1_PRESSED)
-        down = (0, 12, y, 0, wheel_down)
-        up = (0, 12, y, 0, curses.BUTTON4_PRESSED)
-        shifted = (0, 12, y, 0, curses.BUTTON4_PRESSED | curses.BUTTON_SHIFT)
-        poller = self.wheel_tui([press, down, press, down, down, shifted, up],
-                                curses.BUTTON4_PRESSED, wheel_down)
+        wheel = curses.BUTTON4_PRESSED | app.MouseSelection.wheel_down
+        self.assertEqual(mask.call_args_list[0].args[0] & wheel, wheel)
         poller.request_focus.assert_called_once_with(self.rows[2].key, ())
-
-    def test_tui_legacy_abi_ignores_ambiguous_wheel_events(self):
-        _, hits = self.frame()
-        y = next(y for y, key in hits.items() if key == self.rows[1].key)
-        press = (0, 12, y, 0, curses.BUTTON1_PRESSED)
-        position = (0, 12, y, 0, curses.REPORT_MOUSE_POSITION)
-        up = (0, 12, y, 0, curses.BUTTON4_PRESSED)
-        poller = self.wheel_tui([press, position, up], 0, 0)
-        poller.request_focus.assert_called_once_with(self.rows[1].key, ())
-        if not hasattr(curses, 'BUTTON5_PRESSED'):
-            self.assertEqual((app.MouseSelection.wheel_up, app.MouseSelection.wheel_down), (0, 0))
 
     def test_mouse_reporting_restored_on_input_failure(self):
         screen = Mock()

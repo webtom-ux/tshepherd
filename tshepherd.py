@@ -1916,12 +1916,11 @@ def render_lines(view, rows, width, height, busy, now, hits=None):
 class MouseSelection:
     """Immediate single-click selection; two presses, never two focus jobs."""
     interval = 0.35
-    # The legacy ncurses mouse ABI (macOS) has no button 5: wheel-down and
-    # sideways scroll arrive as identical position events, so no wheel there.
-    wheel_down = getattr(curses, "BUTTON5_PRESSED", 0)
-    wheel_up = curses.BUTTON4_PRESSED if wheel_down else 0
+    wheel_up = curses.BUTTON4_PRESSED
+    # The legacy ncurses mouse ABI (macOS) reports wheel-down only as position;
+    # with this mask it decodes sideways scroll (buttons 6/7) the same way.
+    wheel_down = getattr(curses, "BUTTON5_PRESSED", curses.REPORT_MOUSE_POSITION)
     mask = curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED | wheel_up | wheel_down
-    modifiers = curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT
 
     def __init__(self):
         self.pending = None
@@ -1931,8 +1930,6 @@ class MouseSelection:
 
     def scroll(self, event):
         buttons = event[4]
-        if buttons & self.modifiers:
-            return None
         key = (curses.KEY_UP if buttons & self.wheel_up
                else curses.KEY_DOWN if buttons & self.wheel_down else None)
         if key is not None:
@@ -1943,7 +1940,7 @@ class MouseSelection:
         _, x, y, z, buttons = event
         height, width = size
         if (z != 0 or not buttons & curses.BUTTON1_PRESSED
-                or buttons & self.modifiers):
+                or buttons & (curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT)):
             return False
         key = hits.get(y) if 0 <= x < width - 1 and 0 <= y < height else None
         if key is None or key not in [row.key for row in rows]:

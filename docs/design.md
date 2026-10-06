@@ -102,10 +102,11 @@ Mouse selection uses a hit map produced by the same rendering pass, including
 scrolled worker lines, narrow detail lines, and the fixed primary row. Headers,
 project labels, spacers, and footer lines have no target. Raw left-button presses
 select immediately; a second press on the same identity within 350 ms uses the
-existing Enter guards and single-flight dispatch. Unmodified wheel ticks take
-the arrow-key movement path when curses exposes button 5. The legacy ncurses
-mouse ABI (macOS system Python) decodes wheel-down and sideways scroll as the
-same position event, so the wheel is not mapped there. Keyboard input, wheel
+existing Enter guards and single-flight dispatch. Wheel ticks take the arrow-key
+movement path. The legacy ncurses mouse ABI (macOS system Python) has no button
+5 and, with this mask, decodes wheel-down and sideways scroll (buttons 6/7) as
+the same position event, so sideways scroll also moves down there. Only mode
+1000 is enabled, so pointer motion is never reported. Keyboard input, wheel
 ticks, a non-entry
 click, changed window size, or a delivered snapshot breaks that click pair;
 physical identity changes also prevent activation across the pair. Mouse reporting

@@ -127,6 +127,9 @@ class TerminalTests(unittest.TestCase):
             self.assertIn(enabled, output)
             self.assertIn(disabled, output)
             self.assertGreater(output.rfind(disabled), output.rfind(enabled))
+        # Pointer motion must never be reported: no button-event or any-motion mode.
+        for mode in (b'1002', b'1003'):
+            self.assertNotIn(b'\x1b[?' + mode + b'h', output)
 
     def test_real_mouse_press_selects_without_focus(self):
         self.drive([], script='tests/fixtures.py', mouse=True)
