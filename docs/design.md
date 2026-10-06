@@ -102,15 +102,21 @@ Mouse selection uses a hit map produced by the same rendering pass, including
 scrolled worker lines, narrow detail lines, and the fixed primary row. Headers,
 project labels, spacers, and footer lines have no target. Raw left-button presses
 select immediately; a second press on the same identity within 350 ms uses the
-existing Enter guards and single-flight dispatch. Wheel ticks take the arrow-key
-movement path. The legacy ncurses mouse ABI (macOS system Python) has no button
-5 and, with this mask, decodes wheel-down and sideways scroll (buttons 6/7) as
-the same position event, so sideways scroll also moves down there. Only mode
-1000 is enabled, so pointer motion is never reported. Keyboard input, wheel
-ticks, a non-entry
+existing Enter guards and single-flight dispatch. Vertical wheel ticks (xterm
+buttons 4/5) take the arrow-key movement path; sideways scroll (buttons 6/7),
+releases, and modified clicks do nothing. Keyboard input, wheel ticks, a non-entry
 click, changed window size, or a delivered snapshot breaks that click pair;
-physical identity changes also prevent activation across the pair. Mouse reporting
-is enabled through curses and its prior mask is restored before terminal teardown.
+physical identity changes also prevent activation across the pair.
+
+`MouseSelection.decode` reads xterm reports from the raw `getch()` stream instead
+of `curses.getmouse()`: the legacy ncurses mouse ABI (macOS system Python) folds
+wheel-down and sideways scroll into the same position event. TShepherd writes
+modes 1000 and 1006 itself (button events only, never 1002/1003 motion) and
+disables them in `tui`'s `finally` before terminal teardown. SGR reports may
+arrive fragmented across reads; legacy `ESC [ M` reports, which `keypad()`
+turns into `KEY_MOUSE`, have their three payload bytes consumed. Arrow keys
+still arrive as keypad codes; a partial escape that does not continue as a
+report is dropped and the following key is handled normally.
 
 The view shows fetch age, data errors, inventory gaps, and unknown states.
 `rows_for` appends the native `done` explanation to the display reason when

@@ -100,17 +100,16 @@ and **q** or **Ctrl+C** to quit. **Left-click** a worker or Firstmate row to
 select it without switching tabs; **double-click** the same entry (within 350 ms)
 to perform its Enter action once. Narrow-layout detail lines also belong to their
 entry; headers, project labels, and the footer are not selectable. A refresh or
-resize between clicks cancels the double-click pair. The **mouse wheel** moves
-the selection like **↑/↓**. With the legacy curses of macOS system Python,
-sideways scrolling is indistinguishable from wheel-down and also moves down.
+resize between clicks cancels the double-click pair. The vertical **mouse wheel**
+moves the selection like **↑/↓**; sideways scrolling never changes it.
 
 Ghostty supports terminal mouse reporting; clicks work when Ghostty (and any
 intervening terminal multiplexer) forwards mouse events to the application.
 Hold **Shift** to use Ghostty's normal text selection instead of dashboard clicks.
 Keyboard navigation remains available when mouse reporting is unsupported.
-The available protocol depends on Python's curses and terminal description;
-older macOS curses may use legacy mouse coordinates limited to 223 columns/rows.
-TShepherd enables reporting only while running and restores it on exit.
+TShepherd requests SGR mouse reports (mode 1006) and decodes them itself; a
+terminal without SGR support falls back to legacy reports limited to 223
+columns/rows. Reporting is enabled only while running and disabled on exit.
 
 The compact model column shows the confirmed
 runtime model and thinking effort (`Sol·M` means Sol with medium effort). Known

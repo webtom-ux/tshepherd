@@ -39,21 +39,37 @@ class TerminalTests(unittest.TestCase):
                 if select.select([master], [], [], .1)[0]:
                     output.extend(os.read(master, 65536))
             if mouse:
-                # Legacy xterm press/release on the displayed second worker.
+                def drain_until(token):
+                    # Keep draining like a real emulator; backpressure would
+                    # otherwise queue later reports before curses reads earlier ones.
+                    seen = bytearray()
+                    deadline = time.monotonic() + 2
+                    while token not in seen and time.monotonic() < deadline:
+                        if select.select([master], [], [], .05)[0]:
+                            seen.extend(os.read(master, 65536))
+                    output.extend(seen)
+                    return seen
+
+                # SGR press on the displayed second worker, split across reads.
                 # Its ID appears only in the selected footer, not in table rows.
-                os.write(master, b'\x1b[M' + bytes((32, 45, 46)))
-                # Keep draining terminal output while the press is outstanding:
-                # a real emulator consumes redraws continuously. Backpressure
-                # can otherwise queue both edges before curses reads the press.
-                selected = bytearray()
-                deadline = time.monotonic() + 2
-                while b'demo-1' not in selected and time.monotonic() < deadline:
-                    if select.select([master], [], [], .05)[0]:
-                        selected.extend(os.read(master, 65536))
-                os.write(master, b'\x1b[M' + bytes((35, 45, 46)))
-                output.extend(selected)
+                os.write(master, b'\x1b[<0;13')
+                time.sleep(.2)
+                os.write(master, b';14M')
+                selected = drain_until(b'demo-1')
                 self.assertIn(b'demo-1', selected)
-                self.assertNotIn(b'Check selection', selected)
+                os.write(master, b'\x1b[<0;13;14m')
+                # Sideways scroll (buttons 6/7) is ignored; one wheel-down moves.
+                os.write(master, b'\x1b[<66;13;14M\x1b[<67;13;14M\x1b[<65;13;14M')
+                time.sleep(.3)
+                # A resize forces a full repaint, so the footer ID is visible again.
+                for height in (29, 30):
+                    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', height, 110, 0, 0))
+                    proc.send_signal(signal.SIGWINCH)
+                    time.sleep(.15)
+                scrolled = drain_until(b'demo-2')
+                self.assertIn(b'demo-2', scrolled)
+                self.assertNotIn(b'demo-3', scrolled)
+                self.assertNotIn(b'Check selection', selected + scrolled)
             if interrupt:
                 proc.send_signal(signal.SIGINT)
             else:
@@ -120,8 +136,8 @@ class TerminalTests(unittest.TestCase):
         output = self.drive([], script='tests/fixtures.py')
         self.assertIn(b'working', output)
         self.assertIn(b'idle', output)
-        # ncurses' xterm mouse protocol is enabled only inside the application.
-        for mode in (b'1000',):
+        # Button reporting with SGR encoding is enabled only inside the application.
+        for mode in (b'1000', b'1006'):
             enabled = b'\x1b[?' + mode + b'h'
             disabled = b'\x1b[?' + mode + b'l'
             self.assertIn(enabled, output)
