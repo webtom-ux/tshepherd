@@ -101,7 +101,9 @@ select it without switching tabs; **double-click** the same entry (within 350 ms
 to perform its Enter action once. Narrow-layout detail lines also belong to their
 entry; headers, project labels, and the footer are not selectable. A refresh or
 resize between clicks cancels the double-click pair. The **mouse wheel** moves
-the selection like **↑/↓**; sideways and modified scrolling are ignored.
+the selection like **↑/↓** when Python's curses reports wheel-down (button 5);
+the legacy curses of macOS system Python cannot tell it from sideways scrolling,
+so the wheel is ignored there. Modified scrolling is always ignored.
 
 Ghostty supports terminal mouse reporting; clicks work when Ghostty (and any
 intervening terminal multiplexer) forwards mouse events to the application.
