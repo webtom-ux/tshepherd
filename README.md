@@ -96,7 +96,21 @@ login, burn, reset, or routing actions. Use `--quota-axi PATH` when the CLI is n
 on `PATH`.
 
 Use **↑/↓** or **j/k** to select, **Enter** to switch tabs, **R** to refresh,
-and **q** or **Ctrl+C** to quit. The compact model column shows the confirmed
+and **q** or **Ctrl+C** to quit. **Left-click** a worker or Firstmate row to
+select it without switching tabs; **double-click** the same entry (within 350 ms)
+to perform its Enter action once. Narrow-layout detail lines also belong to their
+entry; headers, project labels, and the footer are not selectable. A refresh or
+resize between clicks cancels the double-click pair.
+
+Ghostty supports terminal mouse reporting; clicks work when Ghostty (and any
+intervening terminal multiplexer) forwards mouse events to the application.
+Hold **Shift** to use Ghostty's normal text selection instead of dashboard clicks.
+Keyboard navigation remains available when mouse reporting is unsupported.
+The available protocol depends on Python's curses and terminal description;
+older macOS curses may use legacy mouse coordinates limited to 223 columns/rows.
+TShepherd enables reporting only while running and restores it on exit.
+
+The compact model column shows the confirmed
 runtime model and thinking effort (`Sol·M` means Sol with medium effort). Known
 Astra, Terra, Sol, Luna, Grok, and Claude names use fixed labels, in that priority
 order when several match; versioned Claude Opus/Sonnet/Haiku IDs instead show

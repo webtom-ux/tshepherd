@@ -98,6 +98,15 @@ changes after this last check is not possible with the API in use.
 Firstmate's own selection identity and target check are described in
 [Primary chat](#primary-chat).
 
+Mouse selection uses a hit map produced by the same rendering pass, including
+scrolled worker lines, narrow detail lines, and the fixed primary row. Headers,
+project labels, spacers, and footer lines have no target. Raw left-button presses
+select immediately; a second press on the same identity within 350 ms uses the
+existing Enter guards and single-flight dispatch. Keyboard input, a non-entry
+click, changed window size, or a delivered snapshot breaks that click pair;
+physical identity changes also prevent activation across the pair. Mouse reporting
+is enabled through curses and its prior mask is restored before terminal teardown.
+
 The view shows fetch age, data errors, inventory gaps, and unknown states.
 `rows_for` appends the native `done` explanation to the display reason when
 that state is confirmed, without replacing the delivered task activity.

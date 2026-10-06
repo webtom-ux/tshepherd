@@ -1670,6 +1670,7 @@ class View:
     selected_physical: tuple = ()
     quotas: list = field(default_factory=list)
     task_times: dict = field(default_factory=dict)
+    revision: int = 0
 
     def retain_task_times(self, rows, now):
         """Keep the last confirmed active interval for a terminal worker row."""
@@ -1689,6 +1690,7 @@ class View:
 
     def apply(self, kind, payload):
         if kind == "snapshot":
+            self.revision += 1
             self.snapshot, self.natives = payload
             if self.selected:
                 physical = self.natives.get(self.selected[0], Native()).physical
@@ -1760,8 +1762,10 @@ def quota_segments(quotas, now, compact=False, tiny=False):
     return segments
 
 
-def render_lines(view, rows, width, height, busy, now):
+def render_lines(view, rows, width, height, busy, now, hits=None):
     """Reference-like terminal content: count blocks, hierarchy, compact rows."""
+    if hits is not None:
+        hits.clear()
     blank = styled(("", 0))
     if height < 16 or width < 28:
         return [(fit(text, max(0, width - 1)), spans) for text, spans in [
@@ -1810,6 +1814,10 @@ def render_lines(view, rows, width, height, busy, now):
     if wide:
         lines.append(blank)
     if primary is not None:
+        if hits is not None:
+            hits[len(lines)] = primary.key
+            if not wide:
+                hits[len(lines) + 1] = primary.key
         mark = ">" if primary.key == view.selected else " "
         status = tr(primary.live) if primary.physical else tr("nicht verfügbar")
         color = LIVE_STATES.index(primary.live) + 1
@@ -1832,6 +1840,7 @@ def render_lines(view, rows, width, height, busy, now):
                              + "  " + column(tr("Aufgabe"), 8) + "  " + column(tr("Zeit"), time_width)
                              + tr("  Letzte bekannte Aktivität"), 7)))
     body, project, chosen, chosen_end = [], None, None, None
+    body_hits = {}
     group_number = 0
     for number, row in enumerate(rows, 1):
         if row.project != project:
@@ -1843,6 +1852,9 @@ def render_lines(view, rows, width, height, busy, now):
             group_number += 1
         if row.key == view.selected:
             chosen = len(body)
+        body_hits[len(body)] = row.key
+        if not wide:
+            body_hits[len(body) + 1] = row.key
         state_color = LIVE_STATES.index(row.live) + 1
         glyph = {"working": "●", "waiting": "!", "idle": "○", "done": "✓", "unknown": "?"}[row.live]
         mark = ">" if row.key == view.selected else " "
@@ -1873,6 +1885,10 @@ def render_lines(view, rows, width, height, busy, now):
         elif chosen_end >= view.offset + available:
             view.offset = max(0, chosen_end + 1 - available)
     view.offset = max(0, min(view.offset, max(0, len(body) - available)))
+    if hits is not None:
+        hits.update({len(lines) + index - view.offset: key
+                     for index, key in body_hits.items()
+                     if view.offset <= index < view.offset + available})
     lines.extend(body[view.offset:view.offset + available])
     lines.extend([blank] * max(0, height - 4 - len(lines)))
     selected = next((row for row in rows if row.key == view.selected), None)
@@ -1897,6 +1913,37 @@ def render_lines(view, rows, width, height, busy, now):
     return [(fit(text, width - 1), spans) for text, spans in lines[:height]]
 
 
+class MouseSelection:
+    """Immediate single-click selection; two presses, never two focus jobs."""
+    interval = 0.35
+
+    def __init__(self):
+        self.pending = None
+
+    def reset(self):
+        self.pending = None
+
+    def click(self, event, hits, size, view, rows, now):
+        _, x, y, z, buttons = event
+        height, width = size
+        if (z != 0 or not buttons & curses.BUTTON1_PRESSED
+                or buttons & (curses.BUTTON_SHIFT | curses.BUTTON_CTRL | curses.BUTTON_ALT)):
+            return False
+        key = hits.get(y) if 0 <= x < width - 1 and 0 <= y < height else None
+        if key is None or key not in [row.key for row in rows]:
+            self.reset()
+            return False
+        physical = view.natives.get(key[0], Native()).physical
+        token = (key, physical, view.revision, size)
+        activate = (self.pending is not None and self.pending[0] == token
+                    and 0 <= now - self.pending[1] <= self.interval)
+        # A click is explicit reselection, including after physical replacement.
+        view.selected, view.selected_physical = key, ()
+        view.selection(rows)
+        self.pending = None if activate else (token, now)
+        return activate
+
+
 def tui(screen, source):
     curses.curs_set(0)
     screen.timeout(80)
@@ -1916,7 +1963,16 @@ def tui(screen, source):
     poller = Poller(source, source.config.interval)
     poller.start()
     retry = UnknownRetry()
+    mouse = MouseSelection()
+    old_mouse_mask = None
+    old_mouse_interval = None
     try:
+        try:
+            # Raw presses avoid curses delaying selection to aggregate clicks.
+            _, old_mouse_mask = curses.mousemask(curses.BUTTON1_PRESSED | curses.BUTTON1_RELEASED)
+            old_mouse_interval = curses.mouseinterval(0)
+        except curses.error:
+            pass  # Keyboard-only terminals remain supported.
         while True:
             while not poller.results.empty():
                 view.apply(*poller.results.get_nowait())
@@ -1928,7 +1984,8 @@ def tui(screen, source):
                 view.selection(rows)
             height, width = screen.getmaxyx()
             screen.erase()
-            for y, (text, spans) in enumerate(render_lines(view, rows, width, height, poller.busy.is_set(), now)):
+            hits = {}
+            for y, (text, spans) in enumerate(render_lines(view, rows, width, height, poller.busy.is_set(), now, hits)):
                 try:
                     screen.addstr(y, 0, text)
                     for x, segment, role in spans:
@@ -1944,6 +2001,20 @@ def tui(screen, source):
                     pass  # Last-cell/resize races are harmless; next frame redraws.
             screen.refresh()
             key = screen.getch()
+            if key == curses.KEY_MOUSE:
+                try:
+                    event = curses.getmouse()
+                except curses.error:
+                    mouse.reset()
+                    continue
+                if screen.getmaxyx() != (height, width):
+                    mouse.reset()
+                    continue
+                if not mouse.click(event, hits, (height, width), view, rows, time.monotonic()):
+                    continue
+                key = curses.KEY_ENTER  # One shared, guarded activation path.
+            elif key != -1:
+                mouse.reset()
             if key in (ord("q"), 3):
                 break
             if key in (curses.KEY_UP, ord("k")):
@@ -1961,7 +2032,13 @@ def tui(screen, source):
                 else:
                     view.message = tr("Fokusprüfung läuft bereits")
     finally:
-        poller.close()
+        try:
+            if old_mouse_mask is not None:
+                curses.mousemask(old_mouse_mask)
+            if old_mouse_interval is not None:
+                curses.mouseinterval(old_mouse_interval)
+        finally:
+            poller.close()
 
 
 def parse_args(argv=None):

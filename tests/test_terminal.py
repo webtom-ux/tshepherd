@@ -18,7 +18,7 @@ import unittest
 
 
 class TerminalTests(unittest.TestCase):
-    def drive(self, args, interrupt=False, script="tshepherd.py"):
+    def drive(self, args, interrupt=False, script="tshepherd.py", mouse=False):
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 110, 0, 0))
         before = termios.tcgetattr(slave)
@@ -38,6 +38,22 @@ class TerminalTests(unittest.TestCase):
                 time.sleep(.15)
                 if select.select([master], [], [], .1)[0]:
                     output.extend(os.read(master, 65536))
+            if mouse:
+                # Legacy xterm press/release on the displayed second worker.
+                # Its ID appears only in the selected footer, not in table rows.
+                os.write(master, b'\x1b[M' + bytes((32, 45, 46)))
+                # Keep draining terminal output while the press is outstanding:
+                # a real emulator consumes redraws continuously. Backpressure
+                # can otherwise queue both edges before curses reads the press.
+                selected = bytearray()
+                deadline = time.monotonic() + 2
+                while b'demo-1' not in selected and time.monotonic() < deadline:
+                    if select.select([master], [], [], .05)[0]:
+                        selected.extend(os.read(master, 65536))
+                os.write(master, b'\x1b[M' + bytes((35, 45, 46)))
+                output.extend(selected)
+                self.assertIn(b'demo-1', selected)
+                self.assertNotIn(b'Check selection', selected)
             if interrupt:
                 proc.send_signal(signal.SIGINT)
             else:
@@ -104,6 +120,16 @@ class TerminalTests(unittest.TestCase):
         output = self.drive([], script='tests/fixtures.py')
         self.assertIn(b'working', output)
         self.assertIn(b'idle', output)
+        # ncurses' xterm mouse protocol is enabled only inside the application.
+        for mode in (b'1000',):
+            enabled = b'\x1b[?' + mode + b'h'
+            disabled = b'\x1b[?' + mode + b'l'
+            self.assertIn(enabled, output)
+            self.assertIn(disabled, output)
+            self.assertGreater(output.rfind(disabled), output.rfind(enabled))
+
+    def test_real_mouse_press_selects_without_focus(self):
+        self.drive([], script='tests/fixtures.py', mouse=True)
 
     def test_real_shell_usable_after_quit_and_terminal_ctrl_c(self):
         # Isolate the controlling-shell scenario from other PTY fixtures.
